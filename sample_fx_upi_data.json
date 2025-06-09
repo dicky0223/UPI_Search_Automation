@@ -1,0 +1,37 @@
+{
+  "upis": [
+    {
+      "upiCode": "KLMNOPQRSTUV",
+      "assetClass": "ForeignExchange",
+      "instrumentType": "Forward",
+      "product": "NDF",
+      "underlying": {
+        "currencyPair": "USD/CNY",
+        "settlementCurrency": "USD"
+      },
+      "deliveryType": "Cash"
+    },
+    {
+      "upiCode": "WXYZABCDEFGH",
+      "assetClass": "ForeignExchange",
+      "instrumentType": "Forward",
+      "product": "Vanilla",
+      "underlying": {
+        "currencyPair": "EUR/USD"
+      },
+      "deliveryType": "Physical"
+    },
+    {
+      "upiCode": "IJKLMNOPQRST",
+      "assetClass": "ForeignExchange",
+      "instrumentType": "Option",
+      "product": "Vanilla",
+      "underlying": {
+        "currencyPair": "GBP/USD"
+      },
+      "optionType": "Call",
+      "optionStyle": "European",
+      "deliveryType": "Physical"
+    }
+  ]
+}

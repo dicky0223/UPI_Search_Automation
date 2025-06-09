@@ -1,0 +1,53 @@
+{
+  "upis": [
+    {
+      "upiCode": "ABCDEFGHIJKL",
+      "assetClass": "Rates",
+      "instrumentType": "Swap",
+      "product": "Fixed_Float",
+      "underlying": {
+        "referenceRate": "USD-LIBOR-3M",
+        "currency": "USD",
+        "term": "3M"
+      },
+      "fixedRate": {
+        "currency": "USD",
+        "term": "6M"
+      },
+      "deliveryType": "Cash"
+    },
+    {
+      "upiCode": "MNOPQRSTUVWX",
+      "assetClass": "Rates",
+      "instrumentType": "Swap",
+      "product": "Fixed_Float",
+      "underlying": {
+        "referenceRate": "EUR-EURIBOR-6M",
+        "currency": "EUR",
+        "term": "6M"
+      },
+      "fixedRate": {
+        "currency": "EUR",
+        "term": "1Y"
+      },
+      "deliveryType": "Cash"
+    },
+    {
+      "upiCode": "YZABCDEFGHIJ",
+      "assetClass": "Rates",
+      "instrumentType": "Swap",
+      "product": "Float_Float",
+      "underlying": {
+        "referenceRate": "USD-LIBOR-3M",
+        "currency": "USD",
+        "term": "3M"
+      },
+      "otherLeg": {
+        "referenceRate": "USD-LIBOR-6M",
+        "currency": "USD",
+        "term": "6M"
+      },
+      "deliveryType": "Cash"
+    }
+  ]
+}
