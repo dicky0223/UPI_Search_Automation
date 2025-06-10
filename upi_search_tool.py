@@ -554,8 +554,9 @@ class UPISearchTool:
     
     def get_fx_mapping_fields(self, product):
         """Get FX mapping fields based on product type"""
-        # Common FX fields
+        # Common FX fields - ADDED InstrumentType for CNH handling
         fields = [
+            ("Instrument Type", "InstrumentType", True),  # NEW: Required for CNH detection
             ("Notional Currency", "NotionalCurrency", True),
             ("Other Notional Currency", "OtherNotionalCurrency", True),
         ]
@@ -573,10 +574,19 @@ class UPISearchTool:
             fields.extend([
                 ("Settlement Currency", "SettlementCurrency", False),
                 ("Underlying Asset Type", "UnderlyingAssetType", True),
-                ("Return or Payout Trigger", "ReturnorPayoutTrigger", True),
+                ("Return or Payout Trigger", "ReturnorPayoutTrigger", False),
                 ("Delivery Type", "DeliveryType", True),
                 ("Place of Settlement", "PlaceofSettlement", False),
             ])
+            
+            # Add option-specific fields for Non_Standard Options
+            if self.has_option_non_standard_upis():
+                fields.extend([
+                    ("Option Type", "OptionType", False),
+                    ("Option Exercise Style", "OptionExerciseStyle", False),
+                    ("Valuation Method or Trigger", "ValuationMethodorTrigger", False),
+                ])
+                
         elif product in ["Digital_Option", "Vanilla_Option"]:
             fields.extend([
                 ("Option Type", "OptionType", True),
@@ -594,6 +604,16 @@ class UPISearchTool:
             ])
         
         return fields
+    
+    def has_option_non_standard_upis(self):
+        """Check if we have Option Non_Standard UPIs available"""
+        for upi in self.upi_data:
+            header = upi.get("Header", {})
+            if (header.get("AssetClass") == "Foreign_Exchange" and 
+                header.get("InstrumentType") == "Option" and 
+                header.get("UseCase") == "Non_Standard"):
+                return True
+        return False
     
     def get_ir_mapping_fields(self, product):
         """Get IR mapping fields based on product type"""
@@ -625,6 +645,7 @@ class UPISearchTool:
     def get_field_description(self, field_name):
         """Get description for mapping fields"""
         descriptions = {
+            "InstrumentType": "Forward, Option, or Swap (required for CNH special handling)",
             "NotionalCurrency": "Currency in which the notional is denominated (e.g., USD, EUR)",
             "OtherNotionalCurrency": "Currency for leg 2 in cross-currency contracts",
             "DeliveryType": "CASH or PHYS",
@@ -672,6 +693,8 @@ class UPISearchTool:
             elif "option" in label.lower() and "type" in label.lower() and ("option" in col_simple and "type" in col_simple):
                 return col
             elif "option" in label.lower() and "style" in label.lower() and ("style" in col_simple or "exercise" in col_simple):
+                return col
+            elif "instrument" in label.lower() and "type" in label.lower() and ("instrument" in col_simple or "product" in col_simple):
                 return col
                 
         return None
@@ -748,19 +771,18 @@ class UPISearchTool:
         result = {"TradeDetails": trade.to_dict(), "MatchedUPI": None, "Score": 0, "Message": "", "AllMatches": []}
         
         try:
-            # Filter UPIs by asset class and product
-            asset_class_filter = "Foreign_Exchange" if self.asset_class.get() == "FX" else "Rates"
-            product_filter = self.product_type.get()
+            # Get trade values for CNH detection
+            trade_values = self.extract_trade_values(trade, mapping)
             
-            relevant_upis = []
-            for upi in self.upi_data:
-                header = upi.get("Header", {})
-                if (header.get("AssetClass") == asset_class_filter and 
-                    header.get("UseCase") == product_filter):
-                    relevant_upis.append(upi)
+            # Check if this is a CNH/CNY trade
+            is_cnh_trade = self.is_cnh_trade(trade_values)
+            
+            # Filter UPIs by asset class and apply CNH special handling
+            asset_class_filter = "Foreign_Exchange" if self.asset_class.get() == "FX" else "Rates"
+            relevant_upis = self.filter_upis_with_cnh_handling(asset_class_filter, trade_values, is_cnh_trade)
             
             if not relevant_upis:
-                result["Message"] = f"No UPI records found for {asset_class_filter} {product_filter}"
+                result["Message"] = f"No UPI records found for {asset_class_filter} with the specified criteria"
                 return result
             
             # Perform matching and collect all scores
@@ -792,7 +814,8 @@ class UPISearchTool:
                     if len(high_score_matches) > 1:
                         result["Message"] = f"Multiple UPIs found with high scores. Best match: {best_score}% (Total candidates: {len(high_score_matches)})"
                     else:
-                        result["Message"] = f"UPI found with match score: {best_score}%"
+                        cnh_note = " (CNH special handling applied)" if is_cnh_trade else ""
+                        result["Message"] = f"UPI found with match score: {best_score}%{cnh_note}"
                 else:
                     result["Message"] = f"No matching UPI found with sufficient confidence (best score: {best_score}%, threshold: {threshold_score}%)"
             else:
@@ -802,6 +825,74 @@ class UPISearchTool:
             result["Message"] = f"Error during UPI search: {str(e)}"
         
         return result
+    
+    def extract_trade_values(self, trade, mapping):
+        """Extract trade values based on mapping"""
+        trade_values = {}
+        
+        for field_name, mapping_info in mapping.items():
+            method = mapping_info["method"]
+            value = mapping_info["value"]
+            
+            if method == "manual":
+                if value and value.strip():
+                    trade_values[field_name] = value.strip()
+            else:  # column mapping
+                column_name = value
+                if column_name != "N/A" and column_name in trade:
+                    trade_value = trade[column_name]
+                    if pd.notna(trade_value) and str(trade_value).strip():
+                        trade_values[field_name] = str(trade_value).strip()
+        
+        return trade_values
+    
+    def is_cnh_trade(self, trade_values):
+        """Check if trade involves CNH or CNY currencies"""
+        cnh_currencies = ["CNH", "CNY"]
+        
+        # Check NotionalCurrency and OtherNotionalCurrency
+        notional_ccy = trade_values.get("NotionalCurrency", "").upper()
+        other_notional_ccy = trade_values.get("OtherNotionalCurrency", "").upper()
+        
+        return notional_ccy in cnh_currencies or other_notional_ccy in cnh_currencies
+    
+    def filter_upis_with_cnh_handling(self, asset_class_filter, trade_values, is_cnh_trade):
+        """Filter UPIs with CNH special handling logic"""
+        relevant_upis = []
+        
+        if is_cnh_trade and asset_class_filter == "Foreign_Exchange":
+            # CNH Special Handling: Look for Non_Standard UPIs first
+            instrument_type = trade_values.get("InstrumentType", "").strip()
+            
+            # First priority: Non_Standard UPIs matching the instrument type
+            non_standard_upis = []
+            for upi in self.upi_data:
+                header = upi.get("Header", {})
+                if (header.get("AssetClass") == asset_class_filter and 
+                    header.get("UseCase") == "Non_Standard" and
+                    header.get("InstrumentType") == instrument_type):
+                    non_standard_upis.append(upi)
+            
+            if non_standard_upis:
+                relevant_upis.extend(non_standard_upis)
+            else:
+                # Fallback: If no Non_Standard UPIs, use regular product-specific UPIs
+                product_filter = self.product_type.get()
+                for upi in self.upi_data:
+                    header = upi.get("Header", {})
+                    if (header.get("AssetClass") == asset_class_filter and 
+                        header.get("UseCase") == product_filter):
+                        relevant_upis.append(upi)
+        else:
+            # Regular handling: Use product-specific UPIs
+            product_filter = self.product_type.get()
+            for upi in self.upi_data:
+                header = upi.get("Header", {})
+                if (header.get("AssetClass") == asset_class_filter and 
+                    header.get("UseCase") == product_filter):
+                    relevant_upis.append(upi)
+        
+        return relevant_upis
     
     def calculate_upi_score(self, trade, mapping, upi):
         """Calculate matching score between trade and UPI"""
@@ -870,11 +961,23 @@ class UPISearchTool:
             if trade_str in upi_str or upi_str in trade_str:
                 return weight * 0.7
         
+        # Instrument type matches
+        if field_name == "InstrumentType":
+            if trade_str == upi_str:
+                return weight
+        
+        # Place of Settlement special scoring for CNH trades
+        if field_name == "PlaceofSettlement":
+            # Give higher score for China/Hong Kong for CNH trades
+            if ("CHINA" in trade_str or "HONG KONG" in trade_str) and ("CHINA" in upi_str or "HONG KONG" in upi_str):
+                return weight * 0.9
+        
         return 0
     
     def get_field_weight(self, field_name):
         """Get weight for different fields"""
         weights = {
+            "InstrumentType": 20,  # High weight for CNH handling
             "NotionalCurrency": 25,
             "OtherNotionalCurrency": 20,
             "ReferenceRate": 20,
@@ -891,7 +994,7 @@ class UPISearchTool:
             "NotionalSchedule": 10,
             "UnderlyingAssetType": 10,
             "ReturnorPayoutTrigger": 10,
-            "PlaceofSettlement": 5,
+            "PlaceofSettlement": 8,  # Moderate weight for CNH settlement
         }
         return weights.get(field_name, 5)
     
