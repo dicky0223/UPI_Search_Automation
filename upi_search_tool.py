@@ -509,7 +509,7 @@ class UPISearchTool:
                     best_match = upi
             
             # Set result based on best match
-            if best_match and best_score >= 50:  # Require at least 50% match
+            if best_match and best_score >= 80:  # Require at least 50% match
                 result["MatchedUPI"] = best_match
                 result["Score"] = best_score
                 result["Message"] = f"UPI found with match score: {best_score}"
