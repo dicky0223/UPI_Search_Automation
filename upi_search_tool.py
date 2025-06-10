@@ -6,12 +6,13 @@ import os
 import re
 from tkinter import scrolledtext
 import traceback
+import time
 
 class UPISearchTool:
     def __init__(self, root):
         self.root = root
         self.root.title("UPI Search Automation Tool - DSB RECORDS Format")
-        self.root.geometry("1200x900")
+        self.root.geometry("1400x1000")  # Increased size for new columns
         
         # Initialize variables
         self.upi_data = None
@@ -24,8 +25,82 @@ class UPISearchTool:
         self.results = []
         self.available_products = []
         
+        # Load UPI schemas for attribute definitions
+        self.upi_schemas = {}
+        self._load_upi_schemas()
+        
         # Create UI
         self.create_ui()
+    
+    def _load_upi_schemas(self):
+        """Load UPI schema files to get attribute definitions and allowable values"""
+        try:
+            # Define schema file mapping based on asset class and product
+            schema_files = {
+                ("Foreign_Exchange", "Forward"): "Foreign_Exchange.Forward.Forward.UPI.V1.json",
+                ("Foreign_Exchange", "NDF"): "Foreign_Exchange.Forward.NDF.UPI.V1.json",
+                ("Foreign_Exchange", "Non_Standard"): "Foreign_Exchange.Forward.Non_Standard.UPI.V1.json",
+                ("Foreign_Exchange", "Digital_Option"): "Foreign_Exchange.Option.Digital_Option.UPI.V1.json",
+                ("Foreign_Exchange", "Vanilla_Option"): "Foreign_Exchange.Option.Vanilla_Option.UPI.V1.json",
+                ("Foreign_Exchange", "FX_Swap"): "Foreign_Exchange.Swap.FX_Swap.UPI.V1.json",
+                ("Rates", "Basis"): "Rates.Swap.Basis.UPI.V1.json",
+                ("Rates", "Basis_OIS"): "Rates.Swap.Basis_OIS.UPI.V1.json",
+                ("Rates", "Cross_Currency_Basis"): "Rates.Swap.Cross_Currency_Basis.UPI.V1.json",
+                ("Rates", "Cross_Currency_Fixed_Fixed"): "Rates.Swap.Cross_Currency_Fixed_Fixed.UPI.V1.json",
+                ("Rates", "Cross_Currency_Fixed_Float"): "Rates.Swap.Cross_Currency_Fixed_Float.UPI.V1.json",
+            }
+            
+            # Load each schema file
+            for key, filename in schema_files.items():
+                if os.path.exists(filename):
+                    try:
+                        with open(filename, 'r', encoding='utf-8') as f:
+                            schema = json.load(f)
+                            self.upi_schemas[key] = schema
+                    except Exception as e:
+                        print(f"Error loading schema {filename}: {e}")
+                        
+        except Exception as e:
+            print(f"Error loading UPI schemas: {e}")
+    
+    def get_upi_attribute_details(self, field_name):
+        """Get attribute details (description, enum values) from UPI schema"""
+        try:
+            asset_class = "Foreign_Exchange" if self.asset_class.get() == "FX" else "Rates"
+            product = self.product_type.get()
+            
+            schema_key = (asset_class, product)
+            schema = self.upi_schemas.get(schema_key)
+            
+            if not schema:
+                return {"description": "", "enum": [], "elaboration": {}}
+            
+            # Look for the field in Attributes section
+            attributes = schema.get("properties", {}).get("Attributes", {}).get("properties", {})
+            field_def = attributes.get(field_name, {})
+            
+            # Extract details
+            description = field_def.get("description", "")
+            enum_values = field_def.get("enum", [])
+            elaboration = field_def.get("elaboration", {})
+            
+            # If not found in Attributes, check Derived section
+            if not description and not enum_values:
+                derived = schema.get("properties", {}).get("Derived", {}).get("properties", {})
+                field_def = derived.get(field_name, {})
+                description = field_def.get("description", "")
+                enum_values = field_def.get("enum", [])
+                elaboration = field_def.get("elaboration", {})
+            
+            return {
+                "description": description,
+                "enum": enum_values,
+                "elaboration": elaboration
+            }
+            
+        except Exception as e:
+            print(f"Error getting attribute details for {field_name}: {e}")
+            return {"description": "", "enum": [], "elaboration": {}}
     
     def create_ui(self):
         # Create a notebook (tabbed interface)
@@ -65,7 +140,7 @@ class UPISearchTool:
         ttk.Button(upi_frame, text="Browse", command=self.browse_upi_file).grid(row=0, column=2, padx=5, pady=5)
         
         # Add note about RECORDS format
-        ttk.Label(upi_frame, text="Note: Supports RECORDS files downloaded from DSB website", 
+        ttk.Label(upi_frame, text="Note: Supports RECORDS files downloaded from DSB website (JSON line format)", 
                  font=("Arial", 8), foreground="gray").grid(row=1, column=0, columnspan=3, padx=5, pady=2, sticky='w')
         
         # Trade Data Upload
@@ -119,6 +194,11 @@ class UPISearchTool:
         # Map Button (initially hidden)
         self.map_button = ttk.Button(self.tab3, text="Map Columns & Search UPIs", command=self.search_upis)
         
+        # Progress bar for UPI search
+        self.progress_frame = ttk.Frame(self.tab3)
+        self.progress_bar = ttk.Progressbar(self.progress_frame, mode='determinate')
+        self.progress_label = ttk.Label(self.progress_frame, text="")
+        
         # Status display
         self.status_mapping = tk.StringVar()
         self.status_label_mapping = ttk.Label(self.tab3, textvariable=self.status_mapping)
@@ -152,180 +232,73 @@ class UPISearchTool:
             self.trade_file_path.set(filename)
     
     def parse_records_file(self, file_path):
-        """Parse RECORDS file format from DSB"""
+        """Parse RECORDS file format from DSB - JSON line format"""
         try:
             upi_records = []
             
             with open(file_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
             
-            # Skip header lines and find the data start
-            data_lines = []
-            for line in lines:
+            # Process each line as a JSON object
+            for line_num, line in enumerate(lines, 1):
                 line = line.strip()
-                if line and not line.startswith('#') and '|' in line:
-                    data_lines.append(line)
-            
-            if not data_lines:
-                raise ValueError("No valid data lines found in RECORDS file")
-            
-            # Parse each data line
-            for line_num, line in enumerate(data_lines):
+                
+                # Skip empty lines and comments
+                if not line or line.startswith('#'):
+                    continue
+                
                 try:
-                    # Split by pipe delimiter
-                    fields = [field.strip() for field in line.split('|')]
+                    # Parse each line as JSON
+                    record = json.loads(line)
                     
-                    if len(fields) < 10:  # Minimum expected fields
+                    # Validate that it's a UPI record with required structure
+                    if not self.is_valid_upi_record(record):
                         continue
                     
-                    # Map fields based on typical RECORDS structure
-                    # This mapping may need adjustment based on actual file structure
-                    record = {
-                        "TemplateVersion": fields[0] if len(fields) > 0 else "",
-                        "Header": {
-                            "AssetClass": fields[1] if len(fields) > 1 else "",
-                            "InstrumentType": fields[2] if len(fields) > 2 else "",
-                            "UseCase": fields[3] if len(fields) > 3 else "",
-                            "Level": fields[4] if len(fields) > 4 else ""
-                        },
-                        "Identifier": {
-                            "UPI": fields[5] if len(fields) > 5 else "",
-                            "Status": fields[6] if len(fields) > 6 else "",
-                            "StatusReason": fields[7] if len(fields) > 7 else "",
-                            "LastUpdateDateTime": fields[8] if len(fields) > 8 else ""
-                        },
-                        "Derived": {
-                            "ClassificationType": fields[9] if len(fields) > 9 else "",
-                            "ShortName": fields[10] if len(fields) > 10 else "",
-                            "UnderlierName": fields[11] if len(fields) > 11 else ""
-                        },
-                        "Attributes": {}
-                    }
-                    
-                    # Parse attributes based on asset class and product type
-                    if len(fields) > 12:
-                        self.parse_attributes_from_fields(record, fields[12:])
-                    
-                    # Only include records for the selected asset class
+                    # Filter by asset class
                     asset_class_filter = "Foreign_Exchange" if self.asset_class.get() == "FX" else "Rates"
-                    if record["Header"]["AssetClass"] == asset_class_filter:
+                    header = record.get("Header", {})
+                    
+                    if header.get("AssetClass") == asset_class_filter:
                         upi_records.append(record)
                         
-                except Exception as e:
-                    print(f"Error parsing line {line_num + 1}: {e}")
+                except json.JSONDecodeError as e:
+                    print(f"Error parsing JSON on line {line_num}: {e}")
                     continue
+                except Exception as e:
+                    print(f"Error processing line {line_num}: {e}")
+                    continue
+            
+            if not upi_records:
+                raise ValueError(f"No valid UPI records found for asset class: {self.asset_class.get()}")
             
             return upi_records
             
         except Exception as e:
             raise Exception(f"Error parsing RECORDS file: {str(e)}")
     
-    def parse_attributes_from_fields(self, record, attribute_fields):
-        """Parse attributes based on the product type and asset class"""
-        asset_class = record["Header"]["AssetClass"]
-        use_case = record["Header"]["UseCase"]
-        
-        # Map attributes based on known schema structure
-        if asset_class == "Foreign_Exchange":
-            self.parse_fx_attributes(record, attribute_fields, use_case)
-        elif asset_class == "Rates":
-            self.parse_ir_attributes(record, attribute_fields, use_case)
-    
-    def parse_fx_attributes(self, record, fields, use_case):
-        """Parse FX attributes from fields"""
-        attributes = {}
-        
-        # Common FX attributes (adjust indices based on actual file structure)
-        if len(fields) > 0:
-            attributes["NotionalCurrency"] = fields[0]
-        if len(fields) > 1:
-            attributes["OtherNotionalCurrency"] = fields[1]
-        
-        # Product-specific attributes
-        if use_case == "Forward":
-            if len(fields) > 2:
-                attributes["DeliveryType"] = fields[2]
-        elif use_case == "NDF":
-            if len(fields) > 2:
-                attributes["SettlementCurrency"] = fields[2]
-        elif use_case == "Non_Standard":
-            # For Non_Standard (offshore currency handling)
-            if len(fields) > 2:
-                attributes["SettlementCurrency"] = fields[2]
-            if len(fields) > 3:
-                attributes["UnderlyingAssetType"] = fields[3]
-            if len(fields) > 4:
-                attributes["ReturnorPayoutTrigger"] = fields[4]
-            if len(fields) > 5:
-                attributes["DeliveryType"] = fields[5]
-            if len(fields) > 6:
-                attributes["PlaceofSettlement"] = fields[6]
-            # For Non_Standard Options
-            if record["Header"]["InstrumentType"] == "Option":
-                if len(fields) > 7:
-                    attributes["OptionType"] = fields[7]
-                if len(fields) > 8:
-                    attributes["OptionExerciseStyle"] = fields[8]
-                if len(fields) > 9:
-                    attributes["ValuationMethodorTrigger"] = fields[9]
-        elif use_case in ["Digital_Option", "Vanilla_Option"]:
-            if len(fields) > 2:
-                attributes["OptionType"] = fields[2]
-            if len(fields) > 3:
-                attributes["OptionExerciseStyle"] = fields[3]
-            if len(fields) > 4:
-                attributes["DeliveryType"] = fields[4]
-            if use_case == "Digital_Option" and len(fields) > 5:
-                attributes["ValuationMethodorTrigger"] = fields[5]
-                if len(fields) > 6:
-                    attributes["SettlementCurrency"] = fields[6]
-        elif use_case == "FX_Swap":
-            if len(fields) > 2:
-                attributes["DeliveryType"] = fields[2]
-            # For Non-Deliverable FX Swaps (offshore currency)
-            if len(fields) > 3:
-                attributes["PlaceofSettlement"] = fields[3]
-        
-        record["Attributes"] = attributes
-    
-    def parse_ir_attributes(self, record, fields, use_case):
-        """Parse IR attributes from fields"""
-        attributes = {}
-        
-        # Common IR attributes (adjust indices based on actual file structure)
-        if len(fields) > 0:
-            attributes["NotionalCurrency"] = fields[0]
-        if len(fields) > 1:
-            attributes["ReferenceRate"] = fields[1]
-        if len(fields) > 2:
-            try:
-                attributes["ReferenceRateTermValue"] = int(fields[2]) if fields[2] else None
-            except ValueError:
-                attributes["ReferenceRateTermValue"] = None
-        if len(fields) > 3:
-            attributes["ReferenceRateTermUnit"] = fields[3]
-        if len(fields) > 4:
-            attributes["NotionalSchedule"] = fields[4]
-        if len(fields) > 5:
-            attributes["DeliveryType"] = fields[5]
-        
-        # Product-specific attributes
-        if use_case in ["Basis", "Basis_OIS", "Cross_Currency_Basis"]:
-            if len(fields) > 6:
-                attributes["OtherLegReferenceRate"] = fields[6]
-            if len(fields) > 7:
-                try:
-                    attributes["OtherLegReferenceRateTermValue"] = int(fields[7]) if fields[7] else None
-                except ValueError:
-                    attributes["OtherLegReferenceRateTermValue"] = None
-            if len(fields) > 8:
-                attributes["OtherLegReferenceRateTermUnit"] = fields[8]
-        
-        if use_case.startswith("Cross_Currency"):
-            if len(fields) > 9:
-                attributes["OtherNotionalCurrency"] = fields[9]
-        
-        record["Attributes"] = attributes
+    def is_valid_upi_record(self, record):
+        """Validate that the record has the expected UPI structure"""
+        try:
+            # Check for required top-level keys
+            required_keys = ["Header", "Identifier", "Derived", "Attributes"]
+            if not all(key in record for key in required_keys):
+                return False
+            
+            # Check Header structure
+            header = record.get("Header", {})
+            if not all(key in header for key in ["AssetClass", "InstrumentType", "UseCase", "Level"]):
+                return False
+            
+            # Check Identifier structure
+            identifier = record.get("Identifier", {})
+            if not identifier.get("UPI"):
+                return False
+            
+            return True
+            
+        except Exception:
+            return False
     
     def load_data(self):
         try:
@@ -334,8 +307,16 @@ class UPISearchTool:
                 messagebox.showerror("Error", "Please select both UPI RECORDS file and Trade Excel file")
                 return
             
+            # Show loading status
+            self.status_upload.set("Loading UPI data...")
+            self.root.update_idletasks()
+            
             # Load UPI data from RECORDS file
             self.upi_data = self.parse_records_file(self.upi_file_path.get())
+            
+            # Update status
+            self.status_upload.set("Loading trade data...")
+            self.root.update_idletasks()
             
             # Load trade data
             self.trade_data = pd.read_excel(self.trade_file_path.get())
@@ -433,39 +414,103 @@ class UPISearchTool:
         
         # Create header
         ttk.Label(scrollable_frame, text=f"Map your Excel columns to UPI search attributes", 
-                 font=("Arial", 12, "bold")).grid(row=0, column=0, columnspan=3, pady=10)
+                 font=("Arial", 12, "bold")).grid(row=0, column=0, columnspan=5, pady=10)
         ttk.Label(scrollable_frame, text=f"Asset Class: {self.asset_class.get()} | Product: {self.product_type.get()}", 
-                 font=("Arial", 10)).grid(row=1, column=0, columnspan=3, pady=5)
+                 font=("Arial", 10)).grid(row=1, column=0, columnspan=5, pady=5)
+        
+        # Column headers
+        ttk.Label(scrollable_frame, text="Attribute", font=("Arial", 9, "bold")).grid(row=2, column=0, padx=5, pady=5, sticky='w')
+        ttk.Label(scrollable_frame, text="Input Method", font=("Arial", 9, "bold")).grid(row=2, column=1, padx=5, pady=5, sticky='w')
+        ttk.Label(scrollable_frame, text="Value/Column", font=("Arial", 9, "bold")).grid(row=2, column=2, padx=5, pady=5, sticky='w')
+        ttk.Label(scrollable_frame, text="Allowable Values", font=("Arial", 9, "bold")).grid(row=2, column=3, padx=5, pady=5, sticky='w')
+        ttk.Label(scrollable_frame, text="Description", font=("Arial", 9, "bold")).grid(row=2, column=4, padx=5, pady=5, sticky='w')
         
         # Dictionary to store the mapping variables
         self.mapping_vars = {}
         
-        row = 2
+        row = 3
         for label, field_name, required in mapping_fields:
             # Label with required indicator
             label_text = label + (" *" if required else "")
-            ttk.Label(scrollable_frame, text=label_text).grid(row=row, column=0, padx=5, pady=5, sticky='w')
+            ttk.Label(scrollable_frame, text=label_text).grid(row=row, column=0, padx=5, pady=5, sticky='nw')
             
-            # Create variable and dropdown for mapping
-            var = tk.StringVar()
-            self.mapping_vars[field_name] = var
+            # Create variables for this field
+            input_method_var = tk.StringVar(value="column")  # "column" or "manual"
+            value_var = tk.StringVar()
             
-            # Add columns and "N/A" option
+            self.mapping_vars[field_name] = {
+                "method": input_method_var,
+                "value": value_var
+            }
+            
+            # Input method selection (Column or Manual)
+            method_frame = ttk.Frame(scrollable_frame)
+            method_frame.grid(row=row, column=1, padx=5, pady=5, sticky='nw')
+            
+            ttk.Radiobutton(method_frame, text="Column", variable=input_method_var, value="column",
+                           command=lambda fn=field_name: self.update_input_method(fn)).pack(anchor='w')
+            ttk.Radiobutton(method_frame, text="Manual", variable=input_method_var, value="manual",
+                           command=lambda fn=field_name: self.update_input_method(fn)).pack(anchor='w')
+            
+            # Value/Column selection frame
+            value_frame = ttk.Frame(scrollable_frame)
+            value_frame.grid(row=row, column=2, padx=5, pady=5, sticky='nw')
+            
+            # Column dropdown (initially visible)
             columns = list(self.trade_data.columns) + ["N/A"]
-            
-            # Try to auto-select a matching column
             auto_select = self.find_matching_column(label, columns)
             if auto_select:
-                var.set(auto_select)
+                value_var.set(auto_select)
             else:
-                var.set("N/A" if not required else columns[0])
+                value_var.set("N/A" if not required else columns[0])
             
-            dropdown = ttk.Combobox(scrollable_frame, textvariable=var, values=columns, width=40)
-            dropdown.grid(row=row, column=1, padx=5, pady=5)
+            column_dropdown = ttk.Combobox(value_frame, textvariable=value_var, values=columns, width=25)
+            column_dropdown.pack()
             
-            # Add description
-            description = self.get_field_description(field_name)
-            ttk.Label(scrollable_frame, text=description, font=("Arial", 8), foreground="gray").grid(row=row, column=2, padx=5, pady=5, sticky='w')
+            # Manual input entry (initially hidden)
+            manual_entry = ttk.Entry(value_frame, textvariable=value_var, width=25)
+            
+            # Store widgets for later access
+            self.mapping_vars[field_name]["column_widget"] = column_dropdown
+            self.mapping_vars[field_name]["manual_widget"] = manual_entry
+            
+            # Get attribute details from schema
+            attr_details = self.get_upi_attribute_details(field_name)
+            
+            # Allowable values display
+            allowable_frame = ttk.Frame(scrollable_frame)
+            allowable_frame.grid(row=row, column=3, padx=5, pady=5, sticky='nw')
+            
+            if attr_details["enum"]:
+                # Create scrollable text for enum values
+                enum_text = scrolledtext.ScrolledText(allowable_frame, width=20, height=4, wrap=tk.WORD)
+                enum_text.pack()
+                
+                # Add enum values with elaboration
+                for enum_val in attr_details["enum"]:
+                    enum_text.insert(tk.END, f"• {enum_val}")
+                    if enum_val in attr_details["elaboration"]:
+                        elaboration = attr_details["elaboration"][enum_val]
+                        if elaboration and elaboration != enum_val:
+                            enum_text.insert(tk.END, f": {elaboration[:50]}...")
+                    enum_text.insert(tk.END, "\n")
+                
+                enum_text.config(state='disabled')
+            else:
+                ttk.Label(allowable_frame, text="Any value", font=("Arial", 8), foreground="gray").pack()
+            
+            # Description display
+            desc_frame = ttk.Frame(scrollable_frame)
+            desc_frame.grid(row=row, column=4, padx=5, pady=5, sticky='nw')
+            
+            description = attr_details["description"] or self.get_field_description(field_name)
+            if description:
+                desc_text = tk.Text(desc_frame, width=30, height=3, wrap=tk.WORD, font=("Arial", 8))
+                desc_text.insert(tk.END, description)
+                desc_text.config(state='disabled')
+                desc_text.pack()
+            else:
+                ttk.Label(desc_frame, text="No description available", font=("Arial", 8), foreground="gray").pack()
             
             row += 1
         
@@ -475,6 +520,27 @@ class UPISearchTool:
         
         # Show map button
         self.map_button.pack(pady=10)
+    
+    def update_input_method(self, field_name):
+        """Update the input widget based on selected method"""
+        mapping_info = self.mapping_vars[field_name]
+        method = mapping_info["method"].get()
+        
+        # Hide both widgets first
+        mapping_info["column_widget"].pack_forget()
+        mapping_info["manual_widget"].pack_forget()
+        
+        # Show the appropriate widget
+        if method == "column":
+            mapping_info["column_widget"].pack()
+            # Reset to column selection if switching from manual
+            columns = list(self.trade_data.columns) + ["N/A"]
+            if mapping_info["value"].get() not in columns:
+                mapping_info["value"].set("N/A")
+        else:  # manual
+            mapping_info["manual_widget"].pack()
+            # Clear value when switching to manual
+            mapping_info["value"].set("")
     
     def get_mapping_fields(self):
         """Get mapping fields based on asset class and product type"""
@@ -488,9 +554,9 @@ class UPISearchTool:
     
     def get_fx_mapping_fields(self, product):
         """Get FX mapping fields based on product type"""
-        # Common FX fields - now including Instrument Type for CNH handling
+        # Common FX fields - ADDED InstrumentType for CNH handling
         fields = [
-            ("Instrument Type", "InstrumentType", True),
+            ("Instrument Type", "InstrumentType", True),  # NEW: Required for CNH detection
             ("Notional Currency", "NotionalCurrency", True),
             ("Other Notional Currency", "OtherNotionalCurrency", True),
         ]
@@ -508,13 +574,19 @@ class UPISearchTool:
             fields.extend([
                 ("Settlement Currency", "SettlementCurrency", False),
                 ("Underlying Asset Type", "UnderlyingAssetType", True),
-                ("Return or Payout Trigger", "ReturnorPayoutTrigger", True),
+                ("Return or Payout Trigger", "ReturnorPayoutTrigger", False),
                 ("Delivery Type", "DeliveryType", True),
                 ("Place of Settlement", "PlaceofSettlement", False),
-                ("Option Type", "OptionType", False),
-                ("Option Exercise Style", "OptionExerciseStyle", False),
-                ("Valuation Method or Trigger", "ValuationMethodorTrigger", False),
             ])
+            
+            # Add option-specific fields for Non_Standard Options
+            if self.has_option_non_standard_upis():
+                fields.extend([
+                    ("Option Type", "OptionType", False),
+                    ("Option Exercise Style", "OptionExerciseStyle", False),
+                    ("Valuation Method or Trigger", "ValuationMethodorTrigger", False),
+                ])
+                
         elif product in ["Digital_Option", "Vanilla_Option"]:
             fields.extend([
                 ("Option Type", "OptionType", True),
@@ -529,10 +601,19 @@ class UPISearchTool:
         elif product == "FX_Swap":
             fields.extend([
                 ("Delivery Type", "DeliveryType", True),
-                ("Place of Settlement", "PlaceofSettlement", False),
             ])
         
         return fields
+    
+    def has_option_non_standard_upis(self):
+        """Check if we have Option Non_Standard UPIs available"""
+        for upi in self.upi_data:
+            header = upi.get("Header", {})
+            if (header.get("AssetClass") == "Foreign_Exchange" and 
+                header.get("InstrumentType") == "Option" and 
+                header.get("UseCase") == "Non_Standard"):
+                return True
+        return False
     
     def get_ir_mapping_fields(self, product):
         """Get IR mapping fields based on product type"""
@@ -564,14 +645,14 @@ class UPISearchTool:
     def get_field_description(self, field_name):
         """Get description for mapping fields"""
         descriptions = {
-            "InstrumentType": "Forward, Option, or Swap",
+            "InstrumentType": "Forward, Option, or Swap (required for CNH special handling)",
             "NotionalCurrency": "Currency in which the notional is denominated (e.g., USD, EUR)",
             "OtherNotionalCurrency": "Currency for leg 2 in cross-currency contracts",
-            "DeliveryType": "CASH, PHYS, or OPTL",
+            "DeliveryType": "CASH or PHYS",
             "SettlementCurrency": "Currency for settlement",
             "UnderlyingAssetType": "Spot, Forward, Options, or Futures",
             "ReturnorPayoutTrigger": "Payout mechanism",
-            "PlaceofSettlement": "Country/location of settlement (e.g., Hong Kong)",
+            "PlaceofSettlement": "Country/location of settlement",
             "OptionType": "CALL, PUTO, or OPTL",
             "OptionExerciseStyle": "AMER, BERM, or EURO",
             "ValuationMethodorTrigger": "Digital (Binary) or Digital Barrier",
@@ -618,39 +699,53 @@ class UPISearchTool:
                 
         return None
     
-    def is_offshore_cny(self, trade, mapping):
-        """Check if trade involves offshore CNY/CNH currencies"""
-        offshore_currencies = ["CNY", "CNH"]
-        
-        # Check NotionalCurrency
-        notional_col = mapping.get("NotionalCurrency")
-        if notional_col and notional_col != "N/A" and notional_col in trade:
-            notional_value = str(trade[notional_col]).strip().upper()
-            if any(ccy in notional_value for ccy in offshore_currencies):
-                return True
-        
-        # Check OtherNotionalCurrency
-        other_notional_col = mapping.get("OtherNotionalCurrency")
-        if other_notional_col and other_notional_col != "N/A" and other_notional_col in trade:
-            other_notional_value = str(trade[other_notional_col]).strip().upper()
-            if any(ccy in other_notional_value for ccy in offshore_currencies):
-                return True
-        
-        return False
-    
     def search_upis(self):
         try:
             # Clear previous results
             self.results = []
             self.results_text.delete(1.0, tk.END)
             
-            # Get mapping from UI
-            mapping = {field: var.get() for field, var in self.mapping_vars.items()}
+            # Show progress bar
+            self.progress_frame.pack(pady=10)
+            self.progress_label.pack(pady=5)
+            self.progress_bar.pack(fill='x', padx=20, pady=5)
             
-            # Process each trade
+            # Get mapping from UI
+            mapping = {}
+            for field_name, mapping_info in self.mapping_vars.items():
+                method = mapping_info["method"].get()
+                value = mapping_info["value"].get()
+                
+                mapping[field_name] = {
+                    "method": method,
+                    "value": value
+                }
+            
+            # Initialize progress
+            total_trades = len(self.trade_data)
+            self.progress_bar['maximum'] = total_trades
+            self.progress_bar['value'] = 0
+            
+            # Process each trade with progress updates
             for index, trade in self.trade_data.iterrows():
+                # Update progress
+                current_trade = index + 1
+                self.progress_bar['value'] = current_trade
+                self.progress_label.config(text=f"Processing trade {current_trade} of {total_trades}...")
+                self.status_mapping.set(f"Searching UPIs... {current_trade}/{total_trades}")
+                
+                # Force GUI update to show progress
+                self.root.update_idletasks()
+                
+                # Find matching UPI for this trade
                 result = self.find_matching_upi(trade, mapping)
                 self.results.append(result)
+                
+                # Small delay to make progress visible (remove for production)
+                time.sleep(0.01)
+            
+            # Hide progress bar
+            self.progress_frame.pack_forget()
             
             # Display results
             self.display_results()
@@ -659,109 +754,147 @@ class UPISearchTool:
             self.export_button.pack(pady=10)
             
             # Update status
-            self.status_mapping.set(f"UPI search completed. {len(self.results)} trades processed.")
+            matched_count = sum(1 for r in self.results if r["MatchedUPI"] is not None)
+            self.status_mapping.set(f"UPI search completed. {matched_count}/{len(self.results)} trades matched.")
             
             # Switch to results tab
             notebook = self.tab4.master
             notebook.select(3)  # Select the fourth tab (index 3)
             
         except Exception as e:
+            # Hide progress bar on error
+            self.progress_frame.pack_forget()
             messagebox.showerror("Error", f"Error searching UPIs: {str(e)}\n{traceback.format_exc()}")
             self.status_mapping.set(f"Error: {str(e)}")
     
     def find_matching_upi(self, trade, mapping):
-        result = {"TradeDetails": trade.to_dict(), "MatchedUPI": None, "Score": 0, "Message": ""}
+        result = {"TradeDetails": trade.to_dict(), "MatchedUPI": None, "Score": 0, "Message": "", "AllMatches": []}
         
         try:
-            # Filter UPIs by asset class
+            # Get trade values for CNH detection
+            trade_values = self.extract_trade_values(trade, mapping)
+            
+            # Check if this is a CNH/CNY trade
+            is_cnh_trade = self.is_cnh_trade(trade_values)
+            
+            # Filter UPIs by asset class and apply CNH special handling
             asset_class_filter = "Foreign_Exchange" if self.asset_class.get() == "FX" else "Rates"
-            
-            # Check if this is an offshore CNY/CNH trade for FX
-            is_offshore = False
-            if self.asset_class.get() == "FX":
-                is_offshore = self.is_offshore_cny(trade, mapping)
-            
-            # Determine the appropriate product filter based on offshore status
-            if is_offshore and self.asset_class.get() == "FX":
-                # Get instrument type from trade
-                instrument_type_col = mapping.get("InstrumentType")
-                instrument_type = None
-                if instrument_type_col and instrument_type_col != "N/A" and instrument_type_col in trade:
-                    instrument_type = str(trade[instrument_type_col]).strip()
-                
-                # For offshore CNY/CNH trades, use specific product filters
-                if instrument_type and instrument_type.lower() in ["forward", "option"]:
-                    product_filter = "Non_Standard"
-                elif instrument_type and instrument_type.lower() == "swap":
-                    product_filter = "FX_Swap"  # Will look for OPTL delivery type
-                else:
-                    product_filter = self.product_type.get()  # Fallback to selected product
-                
-                result["Message"] = f"Offshore CNY/CNH trade detected. Searching for {product_filter} UPIs."
-            else:
-                product_filter = self.product_type.get()
-            
-            # Filter relevant UPIs
-            relevant_upis = []
-            for upi in self.upi_data:
-                header = upi.get("Header", {})
-                if header.get("AssetClass") == asset_class_filter:
-                    # For offshore trades, apply special filtering
-                    if is_offshore and self.asset_class.get() == "FX":
-                        if header.get("UseCase") == product_filter:
-                            # For FX_Swap offshore, also check for OPTL delivery type
-                            if product_filter == "FX_Swap":
-                                attributes = upi.get("Attributes", {})
-                                if attributes.get("DeliveryType") == "OPTL":
-                                    relevant_upis.append(upi)
-                            else:
-                                relevant_upis.append(upi)
-                    else:
-                        # Normal filtering
-                        if header.get("UseCase") == product_filter:
-                            relevant_upis.append(upi)
+            relevant_upis = self.filter_upis_with_cnh_handling(asset_class_filter, trade_values, is_cnh_trade)
             
             if not relevant_upis:
-                result["Message"] = f"No UPI records found for {asset_class_filter} {product_filter}"
+                result["Message"] = f"No UPI records found for {asset_class_filter} with the specified criteria"
                 return result
             
-            # Perform matching with currency pair reversal fallback
-            best_match = None
-            best_score = 0
-            
-            # First attempt: Direct matching
+            # Perform matching and collect all scores
+            all_matches = []
             for upi in relevant_upis:
-                score = self.calculate_upi_score(trade, mapping, upi, reverse_currencies=False)
-                if score > best_score:
-                    best_score = score
-                    best_match = upi
+                score = self.calculate_upi_score(trade, mapping, upi)
+                if score > 0:  # Only include UPIs with some match
+                    all_matches.append({
+                        "upi": upi,
+                        "score": score
+                    })
             
-            # Second attempt: Try with reversed currency pair if no good match found
-            if best_score < 70:  # Threshold for considering currency reversal
-                for upi in relevant_upis:
-                    score = self.calculate_upi_score(trade, mapping, upi, reverse_currencies=True)
-                    if score > best_score:
-                        best_score = score
-                        best_match = upi
-                        result["Message"] = f"UPI found with reversed currency pair. Match score: {best_score}%"
+            # Sort by score (highest first)
+            all_matches.sort(key=lambda x: x["score"], reverse=True)
+            result["AllMatches"] = all_matches
             
             # Set result based on best match
-            threshold_score = 70
-            if best_match and best_score >= threshold_score:
-                result["MatchedUPI"] = best_match
-                result["Score"] = best_score
-                if not result["Message"]:  # Only set if not already set
-                    result["Message"] = f"UPI found with match score: {best_score}%"
-            else:
-                if not result["Message"]:  # Only set if not already set
+            threshold_score = 50  # Adjustable threshold
+            if all_matches:
+                best_match = all_matches[0]
+                best_score = best_match["score"]
+                
+                if best_score >= threshold_score:
+                    result["MatchedUPI"] = best_match["upi"]
+                    result["Score"] = best_score
+                    
+                    # Check for multiple high-scoring matches
+                    high_score_matches = [m for m in all_matches if m["score"] >= threshold_score]
+                    if len(high_score_matches) > 1:
+                        result["Message"] = f"Multiple UPIs found with high scores. Best match: {best_score}% (Total candidates: {len(high_score_matches)})"
+                    else:
+                        cnh_note = " (CNH special handling applied)" if is_cnh_trade else ""
+                        result["Message"] = f"UPI found with match score: {best_score}%{cnh_note}"
+                else:
                     result["Message"] = f"No matching UPI found with sufficient confidence (best score: {best_score}%, threshold: {threshold_score}%)"
+            else:
+                result["Message"] = "No UPI matches found based on provided trade attributes"
             
         except Exception as e:
             result["Message"] = f"Error during UPI search: {str(e)}"
         
         return result
     
-    def calculate_upi_score(self, trade, mapping, upi, reverse_currencies=False):
+    def extract_trade_values(self, trade, mapping):
+        """Extract trade values based on mapping"""
+        trade_values = {}
+        
+        for field_name, mapping_info in mapping.items():
+            method = mapping_info["method"]
+            value = mapping_info["value"]
+            
+            if method == "manual":
+                if value and value.strip():
+                    trade_values[field_name] = value.strip()
+            else:  # column mapping
+                column_name = value
+                if column_name != "N/A" and column_name in trade:
+                    trade_value = trade[column_name]
+                    if pd.notna(trade_value) and str(trade_value).strip():
+                        trade_values[field_name] = str(trade_value).strip()
+        
+        return trade_values
+    
+    def is_cnh_trade(self, trade_values):
+        """Check if trade involves CNH or CNY currencies"""
+        cnh_currencies = ["CNH", "CNY"]
+        
+        # Check NotionalCurrency and OtherNotionalCurrency
+        notional_ccy = trade_values.get("NotionalCurrency", "").upper()
+        other_notional_ccy = trade_values.get("OtherNotionalCurrency", "").upper()
+        
+        return notional_ccy in cnh_currencies or other_notional_ccy in cnh_currencies
+    
+    def filter_upis_with_cnh_handling(self, asset_class_filter, trade_values, is_cnh_trade):
+        """Filter UPIs with CNH special handling logic"""
+        relevant_upis = []
+        
+        if is_cnh_trade and asset_class_filter == "Foreign_Exchange":
+            # CNH Special Handling: Look for Non_Standard UPIs first
+            instrument_type = trade_values.get("InstrumentType", "").strip()
+            
+            # First priority: Non_Standard UPIs matching the instrument type
+            non_standard_upis = []
+            for upi in self.upi_data:
+                header = upi.get("Header", {})
+                if (header.get("AssetClass") == asset_class_filter and 
+                    header.get("UseCase") == "Non_Standard" and
+                    header.get("InstrumentType") == instrument_type):
+                    non_standard_upis.append(upi)
+            
+            if non_standard_upis:
+                relevant_upis.extend(non_standard_upis)
+            else:
+                # Fallback: If no Non_Standard UPIs, use regular product-specific UPIs
+                product_filter = self.product_type.get()
+                for upi in self.upi_data:
+                    header = upi.get("Header", {})
+                    if (header.get("AssetClass") == asset_class_filter and 
+                        header.get("UseCase") == product_filter):
+                        relevant_upis.append(upi)
+        else:
+            # Regular handling: Use product-specific UPIs
+            product_filter = self.product_type.get()
+            for upi in self.upi_data:
+                header = upi.get("Header", {})
+                if (header.get("AssetClass") == asset_class_filter and 
+                    header.get("UseCase") == product_filter):
+                    relevant_upis.append(upi)
+        
+        return relevant_upis
+    
+    def calculate_upi_score(self, trade, mapping, upi):
         """Calculate matching score between trade and UPI"""
         score = 0
         max_score = 0
@@ -770,41 +903,38 @@ class UPISearchTool:
         attributes = upi.get("Attributes", {})
         
         # Score each mapped field
-        for field_name, column_name in mapping.items():
-            if column_name == "N/A" or column_name not in trade:
-                continue
+        for field_name, mapping_info in mapping.items():
+            method = mapping_info["method"]
+            value = mapping_info["value"]
             
-            trade_value = trade[column_name]
-            if pd.isna(trade_value) or trade_value == "":
-                continue
+            if method == "manual":
+                # Use manual input value
+                if not value or value.strip() == "":
+                    continue
+                trade_value = value.strip()
+            else:  # column mapping
+                column_name = value
+                if column_name == "N/A" or column_name not in trade:
+                    continue
+                
+                trade_value = trade[column_name]
+                if pd.isna(trade_value) or trade_value == "":
+                    continue
             
             # Get UPI value for this field
             upi_value = attributes.get(field_name)
             if upi_value is None:
                 continue
             
-            # Special handling for currency pair reversal
-            if reverse_currencies and field_name in ["NotionalCurrency", "OtherNotionalCurrency"]:
-                # Try matching with reversed currency assignment
-                if field_name == "NotionalCurrency":
-                    # Try matching trade's NotionalCurrency with UPI's OtherNotionalCurrency
-                    upi_value = attributes.get("OtherNotionalCurrency")
-                elif field_name == "OtherNotionalCurrency":
-                    # Try matching trade's OtherNotionalCurrency with UPI's NotionalCurrency
-                    upi_value = attributes.get("NotionalCurrency")
-                
-                if upi_value is None:
-                    continue
-            
             # Calculate field score
-            field_score = self.calculate_field_score(field_name, trade_value, upi_value, reverse_currencies)
+            field_score = self.calculate_field_score(field_name, trade_value, upi_value)
             score += field_score
             max_score += self.get_field_weight(field_name)
         
         # Return percentage score
         return int((score / max_score * 100)) if max_score > 0 else 0
     
-    def calculate_field_score(self, field_name, trade_value, upi_value, reverse_currencies=False):
+    def calculate_field_score(self, field_name, trade_value, upi_value):
         """Calculate score for a specific field match"""
         weight = self.get_field_weight(field_name)
         
@@ -814,21 +944,16 @@ class UPISearchTool:
         
         # Exact match
         if trade_str == upi_str:
-            # Slightly lower score for reversed currency matches
-            if reverse_currencies and field_name in ["NotionalCurrency", "OtherNotionalCurrency"]:
-                return weight * 0.9
             return weight
         
         # Partial matches for specific fields
         if field_name in ["DeliveryType"]:
-            if ("CASH" in trade_str and "CASH" in upi_str) or ("PHYS" in trade_str and "PHYS" in upi_str) or ("OPTL" in trade_str and "OPTL" in upi_str):
+            if ("CASH" in trade_str and "CASH" in upi_str) or ("PHYS" in trade_str and "PHYS" in upi_str):
                 return weight * 0.8
         
         # Currency code matches (handle different formats)
         if "Currency" in field_name:
             if len(trade_str) == 3 and len(upi_str) == 3 and trade_str == upi_str:
-                if reverse_currencies:
-                    return weight * 0.9
                 return weight
         
         # Reference rate partial matches
@@ -838,22 +963,21 @@ class UPISearchTool:
         
         # Instrument type matches
         if field_name == "InstrumentType":
-            if trade_str.lower() in upi_str.lower() or upi_str.lower() in trade_str.lower():
-                return weight * 0.8
-        
-        # Place of settlement matches
-        if field_name == "PlaceofSettlement":
-            if "HONG KONG" in trade_str and "HONG KONG" in upi_str:
+            if trade_str == upi_str:
                 return weight
-            elif trade_str in upi_str or upi_str in trade_str:
-                return weight * 0.8
+        
+        # Place of Settlement special scoring for CNH trades
+        if field_name == "PlaceofSettlement":
+            # Give higher score for China/Hong Kong for CNH trades
+            if ("CHINA" in trade_str or "HONG KONG" in trade_str) and ("CHINA" in upi_str or "HONG KONG" in upi_str):
+                return weight * 0.9
         
         return 0
     
     def get_field_weight(self, field_name):
         """Get weight for different fields"""
         weights = {
-            "InstrumentType": 15,
+            "InstrumentType": 20,  # High weight for CNH handling
             "NotionalCurrency": 25,
             "OtherNotionalCurrency": 20,
             "ReferenceRate": 20,
@@ -870,7 +994,7 @@ class UPISearchTool:
             "NotionalSchedule": 10,
             "UnderlyingAssetType": 10,
             "ReturnorPayoutTrigger": 10,
-            "PlaceofSettlement": 10,
+            "PlaceofSettlement": 8,  # Moderate weight for CNH settlement
         }
         return weights.get(field_name, 5)
     
@@ -886,9 +1010,11 @@ class UPISearchTool:
         # Summary statistics
         matched_count = sum(1 for r in self.results if r["MatchedUPI"] is not None)
         avg_score = sum(r["Score"] for r in self.results) / len(self.results) if self.results else 0
+        multiple_matches_count = sum(1 for r in self.results if len(r.get("AllMatches", [])) > 1)
         
         self.results_text.insert(tk.END, f"Matches Found: {matched_count}/{len(self.results)}\n")
-        self.results_text.insert(tk.END, f"Average Match Score: {avg_score:.1f}\n")
+        self.results_text.insert(tk.END, f"Average Match Score: {avg_score:.1f}%\n")
+        self.results_text.insert(tk.END, f"Trades with Multiple Candidate UPIs: {multiple_matches_count}\n")
         self.results_text.insert(tk.END, "=" * 100 + "\n\n")
         
         # Display results for each trade
@@ -897,6 +1023,7 @@ class UPISearchTool:
             matched_upi = result["MatchedUPI"]
             score = result["Score"]
             message = result["Message"]
+            all_matches = result.get("AllMatches", [])
             
             # Trade details
             self.results_text.insert(tk.END, f"Trade {i+1}:\n")
@@ -915,16 +1042,23 @@ class UPISearchTool:
             self.results_text.insert(tk.END, f"Match Score: {score}%\n")
             self.results_text.insert(tk.END, f"Status: {message}\n")
             
+            # Show multiple matches if available
+            if len(all_matches) > 1:
+                self.results_text.insert(tk.END, f"Alternative UPI Candidates ({len(all_matches)} total):\n")
+                for j, match in enumerate(all_matches[:3]):  # Show top 3 matches
+                    upi_code = match["upi"].get("Identifier", {}).get("UPI", "N/A")
+                    match_score = match["score"]
+                    self.results_text.insert(tk.END, f"  {j+1}. UPI: {upi_code} (Score: {match_score}%)\n")
+                if len(all_matches) > 3:
+                    self.results_text.insert(tk.END, f"  ... and {len(all_matches) - 3} more candidates\n")
+            
             if matched_upi:
                 identifier = matched_upi.get("Identifier", {})
                 attributes = matched_upi.get("Attributes", {})
                 derived = matched_upi.get("Derived", {})
-                header = matched_upi.get("Header", {})
                 
-                self.results_text.insert(tk.END, f"Matched UPI Code: {identifier.get('UPI', 'N/A')}\n")
+                self.results_text.insert(tk.END, f"Selected UPI Code: {identifier.get('UPI', 'N/A')}\n")
                 self.results_text.insert(tk.END, "UPI Details:\n")
-                self.results_text.insert(tk.END, f"  - Use Case: {header.get('UseCase', 'N/A')}\n")
-                self.results_text.insert(tk.END, f"  - Instrument Type: {header.get('InstrumentType', 'N/A')}\n")
                 
                 # Display key UPI attributes
                 for key, value in attributes.items():
@@ -961,6 +1095,7 @@ class UPISearchTool:
             for i, result in enumerate(self.results):
                 trade_details = result["TradeDetails"]
                 matched_upi = result["MatchedUPI"]
+                all_matches = result.get("AllMatches", [])
                 
                 row = {}
                 
@@ -973,18 +1108,16 @@ class UPISearchTool:
                 row["Match_Message"] = result["Message"]
                 row["Asset_Class"] = self.asset_class.get()
                 row["Product_Type"] = self.product_type.get()
+                row["Total_Candidate_UPIs"] = len(all_matches)
                 
                 if matched_upi:
                     identifier = matched_upi.get("Identifier", {})
                     attributes = matched_upi.get("Attributes", {})
                     derived = matched_upi.get("Derived", {})
-                    header = matched_upi.get("Header", {})
                     
                     row["UPI_Code"] = identifier.get("UPI", "")
                     row["UPI_Status"] = identifier.get("Status", "")
                     row["UPI_LastUpdate"] = identifier.get("LastUpdateDateTime", "")
-                    row["UPI_UseCase"] = header.get("UseCase", "")
-                    row["UPI_InstrumentType"] = header.get("InstrumentType", "")
                     
                     # Add all attributes
                     for key, value in attributes.items():
@@ -994,6 +1127,13 @@ class UPISearchTool:
                     row["UPI_ShortName"] = derived.get("ShortName", "")
                     row["UPI_UnderlierName"] = derived.get("UnderlierName", "")
                     row["UPI_ClassificationType"] = derived.get("ClassificationType", "")
+                
+                # Add alternative UPI candidates
+                for j, match in enumerate(all_matches[:5]):  # Export top 5 alternatives
+                    alt_upi = match["upi"]
+                    alt_identifier = alt_upi.get("Identifier", {})
+                    row[f"Alternative_UPI_{j+1}_Code"] = alt_identifier.get("UPI", "")
+                    row[f"Alternative_UPI_{j+1}_Score"] = match["score"]
                 
                 export_data.append(row)
             
