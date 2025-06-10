@@ -32,7 +32,7 @@ class UPISearchTool:
         self.notebook.add(upload_frame, text="Upload Files")
         
         # UPI File Selection
-        ttk.Label(upload_frame, text="UPI JSON File:").grid(row=0, column=0, sticky="w", padx=10, pady=5)
+        ttk.Label(upload_frame, text="UPI RECORDS File:").grid(row=0, column=0, sticky="w", padx=10, pady=5)
         self.upi_file_var = tk.StringVar()
         ttk.Entry(upload_frame, textvariable=self.upi_file_var, width=50).grid(row=0, column=1, padx=10, pady=5)
         ttk.Button(upload_frame, text="Browse", command=self.browse_upi_file).grid(row=0, column=2, padx=10, pady=5)
@@ -97,8 +97,8 @@ class UPISearchTool:
         
     def browse_upi_file(self):
         filename = filedialog.askopenfilename(
-            title="Select UPI JSON File",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+            title="Select UPI RECORDS File",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
         )
         if filename:
             self.upi_file_var.set(filename)
@@ -113,13 +113,12 @@ class UPISearchTool:
             
     def load_data(self):
         try:
-            # Load UPI data
+            # Load UPI data from RECORDS format
             if not self.upi_file_var.get():
-                messagebox.showerror("Error", "Please select a UPI JSON file")
+                messagebox.showerror("Error", "Please select a UPI RECORDS file")
                 return
                 
-            with open(self.upi_file_var.get(), 'r') as f:
-                self.upi_data = json.load(f)
+            self.upi_data = self.parse_records_file(self.upi_file_var.get())
                 
             # Load trade data
             if not self.trade_file_var.get():
@@ -128,7 +127,7 @@ class UPISearchTool:
                 
             self.trade_data = pd.read_excel(self.trade_file_var.get())
             
-            self.status_label.config(text=f"Loaded {len(self.upi_data.get('upis', []))} UPIs and {len(self.trade_data)} trades")
+            self.status_label.config(text=f"Loaded {len(self.upi_data)} UPI records and {len(self.trade_data)} trades")
             
             # Create mapping interface
             self.create_mapping_interface()
@@ -139,6 +138,26 @@ class UPISearchTool:
         except Exception as e:
             messagebox.showerror("Error", f"Error loading files: {str(e)}")
             
+    def parse_records_file(self, file_path):
+        """Parse DSB RECORDS format file"""
+        upi_records = []
+        
+        with open(file_path, 'r', encoding='utf-8') as file:
+            for line in file:
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                try:
+                    # Parse JSON record from each line
+                    record = json.loads(line)
+                    upi_records.append(record)
+                except json.JSONDecodeError as e:
+                    print(f"Warning: Could not parse line: {line[:100]}... Error: {e}")
+                    continue
+                    
+        return upi_records
+        
     def create_mapping_interface(self):
         # Clear existing mapping interface
         for widget in self.mapping_area.winfo_children():
@@ -177,57 +196,21 @@ class UPISearchTool:
             
     def get_fx_mapping_fields(self):
         """Get mapping fields for FX asset class"""
-        base_fields = [
+        return [
             "Asset Class",
             "Instrument Type",
             "Product Type",
             "Notional Currency",
             "Other Notional Currency",
-            "Delivery Type"
-        ]
-        
-        # Add product-specific fields
-        product_specific_fields = {
-            "Forward": ["Settlement Currency"],
-            "NDF": ["Settlement Currency"],
-            "Non_Standard": [
-                "Underlying Asset Type",
-                "Return or Payout Trigger", 
-                "Option Type",
-                "Option Exercise Style",
-                "Valuation Method or Trigger",
-                "Settlement Currency",
-                "Place of Settlement"
-            ],
-            "Digital_Option": [
-                "Option Type",
-                "Option Exercise Style", 
-                "Valuation Method or Trigger",
-                "Settlement Currency"
-            ],
-            "Vanilla_Option": [
-                "Option Type",
-                "Option Exercise Style"
-            ],
-            "FX_Swap": [],
-            "Non_Deliverable_FX_Swap": [
-                "Settlement Currency",
-                "Place of Settlement"
-            ]
-        }
-        
-        # For now, include all possible fields
-        all_fields = base_fields + [
             "Settlement Currency",
-            "Option Type", 
+            "Delivery Type",
+            "Option Type",
             "Option Exercise Style",
             "Valuation Method or Trigger",
             "Underlying Asset Type",
             "Return or Payout Trigger",
             "Place of Settlement"
         ]
-        
-        return list(dict.fromkeys(all_fields))  # Remove duplicates while preserving order
         
     def get_ir_mapping_fields(self):
         """Get mapping fields for IR asset class"""
@@ -382,7 +365,7 @@ class UPISearchTool:
         """Search UPIs for a specific product type with offshore filtering"""
         matches = []
         
-        for upi in self.upi_data.get("upis", []):
+        for upi in self.upi_data:
             # Parse UPI attributes
             if self.asset_class.get() == "FX":
                 upi_attrs = self.parse_fx_attributes(upi)
