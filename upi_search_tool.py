@@ -12,7 +12,7 @@ class UPISearchTool:
     def __init__(self, root):
         self.root = root
         self.root.title("UPI Search Automation Tool - DSB RECORDS Format")
-        self.root.geometry("1200x900")
+        self.root.geometry("1400x1000")  # Increased size for new columns
         
         # Initialize variables
         self.upi_data = None
