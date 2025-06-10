@@ -65,7 +65,7 @@ class UPISearchTool:
         ttk.Button(upi_frame, text="Browse", command=self.browse_upi_file).grid(row=0, column=2, padx=5, pady=5)
         
         # Add note about RECORDS format
-        ttk.Label(upi_frame, text="Note: Supports RECORDS files downloaded from DSB website", 
+        ttk.Label(upi_frame, text="Note: Supports RECORDS files downloaded from DSB website (JSON line format)", 
                  font=("Arial", 8), foreground="gray").grid(row=1, column=0, columnspan=3, padx=5, pady=2, sticky='w')
         
         # Trade Data Upload
@@ -152,157 +152,73 @@ class UPISearchTool:
             self.trade_file_path.set(filename)
     
     def parse_records_file(self, file_path):
-        """Parse RECORDS file format from DSB"""
+        """Parse RECORDS file format from DSB - JSON line format"""
         try:
             upi_records = []
             
             with open(file_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
             
-            # Skip header lines and find the data start
-            data_lines = []
-            for line in lines:
+            # Process each line as a JSON object
+            for line_num, line in enumerate(lines, 1):
                 line = line.strip()
-                if line and not line.startswith('#') and '|' in line:
-                    data_lines.append(line)
-            
-            if not data_lines:
-                raise ValueError("No valid data lines found in RECORDS file")
-            
-            # Parse each data line
-            for line_num, line in enumerate(data_lines):
+                
+                # Skip empty lines and comments
+                if not line or line.startswith('#'):
+                    continue
+                
                 try:
-                    # Split by pipe delimiter
-                    fields = [field.strip() for field in line.split('|')]
+                    # Parse each line as JSON
+                    record = json.loads(line)
                     
-                    if len(fields) < 10:  # Minimum expected fields
+                    # Validate that it's a UPI record with required structure
+                    if not self.is_valid_upi_record(record):
                         continue
                     
-                    # Map fields based on typical RECORDS structure
-                    # This mapping may need adjustment based on actual file structure
-                    record = {
-                        "TemplateVersion": fields[0] if len(fields) > 0 else "",
-                        "Header": {
-                            "AssetClass": fields[1] if len(fields) > 1 else "",
-                            "InstrumentType": fields[2] if len(fields) > 2 else "",
-                            "UseCase": fields[3] if len(fields) > 3 else "",
-                            "Level": fields[4] if len(fields) > 4 else ""
-                        },
-                        "Identifier": {
-                            "UPI": fields[5] if len(fields) > 5 else "",
-                            "Status": fields[6] if len(fields) > 6 else "",
-                            "StatusReason": fields[7] if len(fields) > 7 else "",
-                            "LastUpdateDateTime": fields[8] if len(fields) > 8 else ""
-                        },
-                        "Derived": {
-                            "ClassificationType": fields[9] if len(fields) > 9 else "",
-                            "ShortName": fields[10] if len(fields) > 10 else "",
-                            "UnderlierName": fields[11] if len(fields) > 11 else ""
-                        },
-                        "Attributes": {}
-                    }
-                    
-                    # Parse attributes based on asset class and product type
-                    if len(fields) > 12:
-                        self.parse_attributes_from_fields(record, fields[12:])
-                    
-                    # Only include records for the selected asset class
+                    # Filter by asset class
                     asset_class_filter = "Foreign_Exchange" if self.asset_class.get() == "FX" else "Rates"
-                    if record["Header"]["AssetClass"] == asset_class_filter:
+                    header = record.get("Header", {})
+                    
+                    if header.get("AssetClass") == asset_class_filter:
                         upi_records.append(record)
                         
-                except Exception as e:
-                    print(f"Error parsing line {line_num + 1}: {e}")
+                except json.JSONDecodeError as e:
+                    print(f"Error parsing JSON on line {line_num}: {e}")
                     continue
+                except Exception as e:
+                    print(f"Error processing line {line_num}: {e}")
+                    continue
+            
+            if not upi_records:
+                raise ValueError(f"No valid UPI records found for asset class: {self.asset_class.get()}")
             
             return upi_records
             
         except Exception as e:
             raise Exception(f"Error parsing RECORDS file: {str(e)}")
     
-    def parse_attributes_from_fields(self, record, attribute_fields):
-        """Parse attributes based on the product type and asset class"""
-        asset_class = record["Header"]["AssetClass"]
-        use_case = record["Header"]["UseCase"]
-        
-        # Map attributes based on known schema structure
-        if asset_class == "Foreign_Exchange":
-            self.parse_fx_attributes(record, attribute_fields, use_case)
-        elif asset_class == "Rates":
-            self.parse_ir_attributes(record, attribute_fields, use_case)
-    
-    def parse_fx_attributes(self, record, fields, use_case):
-        """Parse FX attributes from fields"""
-        attributes = {}
-        
-        # Common FX attributes (adjust indices based on actual file structure)
-        if len(fields) > 0:
-            attributes["NotionalCurrency"] = fields[0]
-        if len(fields) > 1:
-            attributes["OtherNotionalCurrency"] = fields[1]
-        
-        # Product-specific attributes
-        if use_case == "Forward":
-            if len(fields) > 2:
-                attributes["DeliveryType"] = fields[2]
-        elif use_case == "NDF":
-            if len(fields) > 2:
-                attributes["SettlementCurrency"] = fields[2]
-        elif use_case in ["Digital_Option", "Vanilla_Option"]:
-            if len(fields) > 2:
-                attributes["OptionType"] = fields[2]
-            if len(fields) > 3:
-                attributes["OptionExerciseStyle"] = fields[3]
-            if len(fields) > 4:
-                attributes["DeliveryType"] = fields[4]
-            if use_case == "Digital_Option" and len(fields) > 5:
-                attributes["ValuationMethodorTrigger"] = fields[5]
-                if len(fields) > 6:
-                    attributes["SettlementCurrency"] = fields[6]
-        elif use_case == "FX_Swap":
-            if len(fields) > 2:
-                attributes["DeliveryType"] = fields[2]
-        
-        record["Attributes"] = attributes
-    
-    def parse_ir_attributes(self, record, fields, use_case):
-        """Parse IR attributes from fields"""
-        attributes = {}
-        
-        # Common IR attributes (adjust indices based on actual file structure)
-        if len(fields) > 0:
-            attributes["NotionalCurrency"] = fields[0]
-        if len(fields) > 1:
-            attributes["ReferenceRate"] = fields[1]
-        if len(fields) > 2:
-            try:
-                attributes["ReferenceRateTermValue"] = int(fields[2]) if fields[2] else None
-            except ValueError:
-                attributes["ReferenceRateTermValue"] = None
-        if len(fields) > 3:
-            attributes["ReferenceRateTermUnit"] = fields[3]
-        if len(fields) > 4:
-            attributes["NotionalSchedule"] = fields[4]
-        if len(fields) > 5:
-            attributes["DeliveryType"] = fields[5]
-        
-        # Product-specific attributes
-        if use_case in ["Basis", "Basis_OIS", "Cross_Currency_Basis"]:
-            if len(fields) > 6:
-                attributes["OtherLegReferenceRate"] = fields[6]
-            if len(fields) > 7:
-                try:
-                    attributes["OtherLegReferenceRateTermValue"] = int(fields[7]) if fields[7] else None
-                except ValueError:
-                    attributes["OtherLegReferenceRateTermValue"] = None
-            if len(fields) > 8:
-                attributes["OtherLegReferenceRateTermUnit"] = fields[8]
-        
-        if use_case.startswith("Cross_Currency"):
-            if len(fields) > 9:
-                attributes["OtherNotionalCurrency"] = fields[9]
-        
-        record["Attributes"] = attributes
+    def is_valid_upi_record(self, record):
+        """Validate that the record has the expected UPI structure"""
+        try:
+            # Check for required top-level keys
+            required_keys = ["Header", "Identifier", "Derived", "Attributes"]
+            if not all(key in record for key in required_keys):
+                return False
+            
+            # Check Header structure
+            header = record.get("Header", {})
+            if not all(key in header for key in ["AssetClass", "InstrumentType", "UseCase", "Level"]):
+                return False
+            
+            # Check Identifier structure
+            identifier = record.get("Identifier", {})
+            if not identifier.get("UPI"):
+                return False
+            
+            return True
+            
+        except Exception:
+            return False
     
     def load_data(self):
         try:
