@@ -6,6 +6,7 @@ import os
 import re
 from tkinter import scrolledtext
 import traceback
+import time
 
 class UPISearchTool:
     def __init__(self, root):
@@ -119,6 +120,11 @@ class UPISearchTool:
         # Map Button (initially hidden)
         self.map_button = ttk.Button(self.tab3, text="Map Columns & Search UPIs", command=self.search_upis)
         
+        # Progress bar for UPI search
+        self.progress_frame = ttk.Frame(self.tab3)
+        self.progress_bar = ttk.Progressbar(self.progress_frame, mode='determinate')
+        self.progress_label = ttk.Label(self.progress_frame, text="")
+        
         # Status display
         self.status_mapping = tk.StringVar()
         self.status_label_mapping = ttk.Label(self.tab3, textvariable=self.status_mapping)
@@ -227,8 +233,16 @@ class UPISearchTool:
                 messagebox.showerror("Error", "Please select both UPI RECORDS file and Trade Excel file")
                 return
             
+            # Show loading status
+            self.status_upload.set("Loading UPI data...")
+            self.root.update_idletasks()
+            
             # Load UPI data from RECORDS file
             self.upi_data = self.parse_records_file(self.upi_file_path.get())
+            
+            # Update status
+            self.status_upload.set("Loading trade data...")
+            self.root.update_idletasks()
             
             # Load trade data
             self.trade_data = pd.read_excel(self.trade_file_path.get())
@@ -509,13 +523,39 @@ class UPISearchTool:
             self.results = []
             self.results_text.delete(1.0, tk.END)
             
+            # Show progress bar
+            self.progress_frame.pack(pady=10)
+            self.progress_label.pack(pady=5)
+            self.progress_bar.pack(fill='x', padx=20, pady=5)
+            
             # Get mapping from UI
             mapping = {field: var.get() for field, var in self.mapping_vars.items()}
             
-            # Process each trade
+            # Initialize progress
+            total_trades = len(self.trade_data)
+            self.progress_bar['maximum'] = total_trades
+            self.progress_bar['value'] = 0
+            
+            # Process each trade with progress updates
             for index, trade in self.trade_data.iterrows():
+                # Update progress
+                current_trade = index + 1
+                self.progress_bar['value'] = current_trade
+                self.progress_label.config(text=f"Processing trade {current_trade} of {total_trades}...")
+                self.status_mapping.set(f"Searching UPIs... {current_trade}/{total_trades}")
+                
+                # Force GUI update to show progress
+                self.root.update_idletasks()
+                
+                # Find matching UPI for this trade
                 result = self.find_matching_upi(trade, mapping)
                 self.results.append(result)
+                
+                # Small delay to make progress visible (remove for production)
+                time.sleep(0.01)
+            
+            # Hide progress bar
+            self.progress_frame.pack_forget()
             
             # Display results
             self.display_results()
@@ -524,18 +564,21 @@ class UPISearchTool:
             self.export_button.pack(pady=10)
             
             # Update status
-            self.status_mapping.set(f"UPI search completed. {len(self.results)} trades processed.")
+            matched_count = sum(1 for r in self.results if r["MatchedUPI"] is not None)
+            self.status_mapping.set(f"UPI search completed. {matched_count}/{len(self.results)} trades matched.")
             
             # Switch to results tab
             notebook = self.tab4.master
             notebook.select(3)  # Select the fourth tab (index 3)
             
         except Exception as e:
+            # Hide progress bar on error
+            self.progress_frame.pack_forget()
             messagebox.showerror("Error", f"Error searching UPIs: {str(e)}\n{traceback.format_exc()}")
             self.status_mapping.set(f"Error: {str(e)}")
     
     def find_matching_upi(self, trade, mapping):
-        result = {"TradeDetails": trade.to_dict(), "MatchedUPI": None, "Score": 0, "Message": ""}
+        result = {"TradeDetails": trade.to_dict(), "MatchedUPI": None, "Score": 0, "Message": "", "AllMatches": []}
         
         try:
             # Filter UPIs by asset class and product
@@ -553,24 +596,40 @@ class UPISearchTool:
                 result["Message"] = f"No UPI records found for {asset_class_filter} {product_filter}"
                 return result
             
-            # Perform matching
-            best_match = None
-            best_score = 0
-            
+            # Perform matching and collect all scores
+            all_matches = []
             for upi in relevant_upis:
                 score = self.calculate_upi_score(trade, mapping, upi)
-                if score > best_score:
-                    best_score = score
-                    best_match = upi
+                if score > 0:  # Only include UPIs with some match
+                    all_matches.append({
+                        "upi": upi,
+                        "score": score
+                    })
             
-            # Set result based on best match - ADJUSTABLE THRESHOLD HERE
-            threshold_score = 70  # You can change this value to set a higher threshold
-            if best_match and best_score >= threshold_score:
-                result["MatchedUPI"] = best_match
-                result["Score"] = best_score
-                result["Message"] = f"UPI found with match score: {best_score}%"
+            # Sort by score (highest first)
+            all_matches.sort(key=lambda x: x["score"], reverse=True)
+            result["AllMatches"] = all_matches
+            
+            # Set result based on best match
+            threshold_score = 50  # Adjustable threshold
+            if all_matches:
+                best_match = all_matches[0]
+                best_score = best_match["score"]
+                
+                if best_score >= threshold_score:
+                    result["MatchedUPI"] = best_match["upi"]
+                    result["Score"] = best_score
+                    
+                    # Check for multiple high-scoring matches
+                    high_score_matches = [m for m in all_matches if m["score"] >= threshold_score]
+                    if len(high_score_matches) > 1:
+                        result["Message"] = f"Multiple UPIs found with high scores. Best match: {best_score}% (Total candidates: {len(high_score_matches)})"
+                    else:
+                        result["Message"] = f"UPI found with match score: {best_score}%"
+                else:
+                    result["Message"] = f"No matching UPI found with sufficient confidence (best score: {best_score}%, threshold: {threshold_score}%)"
             else:
-                result["Message"] = f"No matching UPI found with sufficient confidence (best score: {best_score}%, threshold: {threshold_score}%)"
+                result["Message"] = "No UPI matches found based on provided trade attributes"
             
         except Exception as e:
             result["Message"] = f"Error during UPI search: {str(e)}"
@@ -671,9 +730,11 @@ class UPISearchTool:
         # Summary statistics
         matched_count = sum(1 for r in self.results if r["MatchedUPI"] is not None)
         avg_score = sum(r["Score"] for r in self.results) / len(self.results) if self.results else 0
+        multiple_matches_count = sum(1 for r in self.results if len(r.get("AllMatches", [])) > 1)
         
         self.results_text.insert(tk.END, f"Matches Found: {matched_count}/{len(self.results)}\n")
-        self.results_text.insert(tk.END, f"Average Match Score: {avg_score:.1f}\n")
+        self.results_text.insert(tk.END, f"Average Match Score: {avg_score:.1f}%\n")
+        self.results_text.insert(tk.END, f"Trades with Multiple Candidate UPIs: {multiple_matches_count}\n")
         self.results_text.insert(tk.END, "=" * 100 + "\n\n")
         
         # Display results for each trade
@@ -682,6 +743,7 @@ class UPISearchTool:
             matched_upi = result["MatchedUPI"]
             score = result["Score"]
             message = result["Message"]
+            all_matches = result.get("AllMatches", [])
             
             # Trade details
             self.results_text.insert(tk.END, f"Trade {i+1}:\n")
@@ -700,12 +762,22 @@ class UPISearchTool:
             self.results_text.insert(tk.END, f"Match Score: {score}%\n")
             self.results_text.insert(tk.END, f"Status: {message}\n")
             
+            # Show multiple matches if available
+            if len(all_matches) > 1:
+                self.results_text.insert(tk.END, f"Alternative UPI Candidates ({len(all_matches)} total):\n")
+                for j, match in enumerate(all_matches[:3]):  # Show top 3 matches
+                    upi_code = match["upi"].get("Identifier", {}).get("UPI", "N/A")
+                    match_score = match["score"]
+                    self.results_text.insert(tk.END, f"  {j+1}. UPI: {upi_code} (Score: {match_score}%)\n")
+                if len(all_matches) > 3:
+                    self.results_text.insert(tk.END, f"  ... and {len(all_matches) - 3} more candidates\n")
+            
             if matched_upi:
                 identifier = matched_upi.get("Identifier", {})
                 attributes = matched_upi.get("Attributes", {})
                 derived = matched_upi.get("Derived", {})
                 
-                self.results_text.insert(tk.END, f"Matched UPI Code: {identifier.get('UPI', 'N/A')}\n")
+                self.results_text.insert(tk.END, f"Selected UPI Code: {identifier.get('UPI', 'N/A')}\n")
                 self.results_text.insert(tk.END, "UPI Details:\n")
                 
                 # Display key UPI attributes
@@ -743,6 +815,7 @@ class UPISearchTool:
             for i, result in enumerate(self.results):
                 trade_details = result["TradeDetails"]
                 matched_upi = result["MatchedUPI"]
+                all_matches = result.get("AllMatches", [])
                 
                 row = {}
                 
@@ -755,6 +828,7 @@ class UPISearchTool:
                 row["Match_Message"] = result["Message"]
                 row["Asset_Class"] = self.asset_class.get()
                 row["Product_Type"] = self.product_type.get()
+                row["Total_Candidate_UPIs"] = len(all_matches)
                 
                 if matched_upi:
                     identifier = matched_upi.get("Identifier", {})
@@ -773,6 +847,13 @@ class UPISearchTool:
                     row["UPI_ShortName"] = derived.get("ShortName", "")
                     row["UPI_UnderlierName"] = derived.get("UnderlierName", "")
                     row["UPI_ClassificationType"] = derived.get("ClassificationType", "")
+                
+                # Add alternative UPI candidates
+                for j, match in enumerate(all_matches[:5]):  # Export top 5 alternatives
+                    alt_upi = match["upi"]
+                    alt_identifier = alt_upi.get("Identifier", {})
+                    row[f"Alternative_UPI_{j+1}_Code"] = alt_identifier.get("UPI", "")
+                    row[f"Alternative_UPI_{j+1}_Score"] = match["score"]
                 
                 export_data.append(row)
             
