@@ -10,7 +10,7 @@ import traceback
 class UPISearchTool:
     def __init__(self, root):
         self.root = root
-        self.root.title("UPI Search Automation Tool - DSB Schema")
+        self.root.title("UPI Search Automation Tool - DSB RECORDS Format")
         self.root.geometry("1200x900")
         
         # Initialize variables
@@ -57,12 +57,16 @@ class UPISearchTool:
     
     def create_upload_tab(self):
         # UPI File Upload
-        upi_frame = ttk.LabelFrame(self.tab1, text="UPI Data (JSON)")
+        upi_frame = ttk.LabelFrame(self.tab1, text="UPI Data (RECORDS File)")
         upi_frame.pack(fill='x', expand=True, padx=10, pady=10)
         
-        ttk.Label(upi_frame, text="UPI JSON File:").grid(row=0, column=0, padx=5, pady=5, sticky='w')
+        ttk.Label(upi_frame, text="UPI RECORDS File:").grid(row=0, column=0, padx=5, pady=5, sticky='w')
         ttk.Entry(upi_frame, textvariable=self.upi_file_path, width=50).grid(row=0, column=1, padx=5, pady=5)
         ttk.Button(upi_frame, text="Browse", command=self.browse_upi_file).grid(row=0, column=2, padx=5, pady=5)
+        
+        # Add note about RECORDS format
+        ttk.Label(upi_frame, text="Note: Supports RECORDS files downloaded from DSB website", 
+                 font=("Arial", 8), foreground="gray").grid(row=1, column=0, columnspan=3, padx=5, pady=2, sticky='w')
         
         # Trade Data Upload
         trade_frame = ttk.LabelFrame(self.tab1, text="Trade Data (Excel)")
@@ -136,7 +140,9 @@ class UPISearchTool:
         self.results_text.insert(tk.END, "Results will be displayed here after mapping and searching.")
     
     def browse_upi_file(self):
-        filename = filedialog.askopenfilename(filetypes=[("JSON files", "*.json")])
+        filename = filedialog.askopenfilename(
+            filetypes=[("RECORDS files", "*.RECORDS"), ("Text files", "*.txt"), ("All files", "*.*")]
+        )
         if filename:
             self.upi_file_path.set(filename)
     
@@ -145,16 +151,168 @@ class UPISearchTool:
         if filename:
             self.trade_file_path.set(filename)
     
+    def parse_records_file(self, file_path):
+        """Parse RECORDS file format from DSB"""
+        try:
+            upi_records = []
+            
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            # Skip header lines and find the data start
+            data_lines = []
+            for line in lines:
+                line = line.strip()
+                if line and not line.startswith('#') and '|' in line:
+                    data_lines.append(line)
+            
+            if not data_lines:
+                raise ValueError("No valid data lines found in RECORDS file")
+            
+            # Parse each data line
+            for line_num, line in enumerate(data_lines):
+                try:
+                    # Split by pipe delimiter
+                    fields = [field.strip() for field in line.split('|')]
+                    
+                    if len(fields) < 10:  # Minimum expected fields
+                        continue
+                    
+                    # Map fields based on typical RECORDS structure
+                    # This mapping may need adjustment based on actual file structure
+                    record = {
+                        "TemplateVersion": fields[0] if len(fields) > 0 else "",
+                        "Header": {
+                            "AssetClass": fields[1] if len(fields) > 1 else "",
+                            "InstrumentType": fields[2] if len(fields) > 2 else "",
+                            "UseCase": fields[3] if len(fields) > 3 else "",
+                            "Level": fields[4] if len(fields) > 4 else ""
+                        },
+                        "Identifier": {
+                            "UPI": fields[5] if len(fields) > 5 else "",
+                            "Status": fields[6] if len(fields) > 6 else "",
+                            "StatusReason": fields[7] if len(fields) > 7 else "",
+                            "LastUpdateDateTime": fields[8] if len(fields) > 8 else ""
+                        },
+                        "Derived": {
+                            "ClassificationType": fields[9] if len(fields) > 9 else "",
+                            "ShortName": fields[10] if len(fields) > 10 else "",
+                            "UnderlierName": fields[11] if len(fields) > 11 else ""
+                        },
+                        "Attributes": {}
+                    }
+                    
+                    # Parse attributes based on asset class and product type
+                    if len(fields) > 12:
+                        self.parse_attributes_from_fields(record, fields[12:])
+                    
+                    # Only include records for the selected asset class
+                    asset_class_filter = "Foreign_Exchange" if self.asset_class.get() == "FX" else "Rates"
+                    if record["Header"]["AssetClass"] == asset_class_filter:
+                        upi_records.append(record)
+                        
+                except Exception as e:
+                    print(f"Error parsing line {line_num + 1}: {e}")
+                    continue
+            
+            return upi_records
+            
+        except Exception as e:
+            raise Exception(f"Error parsing RECORDS file: {str(e)}")
+    
+    def parse_attributes_from_fields(self, record, attribute_fields):
+        """Parse attributes based on the product type and asset class"""
+        asset_class = record["Header"]["AssetClass"]
+        use_case = record["Header"]["UseCase"]
+        
+        # Map attributes based on known schema structure
+        if asset_class == "Foreign_Exchange":
+            self.parse_fx_attributes(record, attribute_fields, use_case)
+        elif asset_class == "Rates":
+            self.parse_ir_attributes(record, attribute_fields, use_case)
+    
+    def parse_fx_attributes(self, record, fields, use_case):
+        """Parse FX attributes from fields"""
+        attributes = {}
+        
+        # Common FX attributes (adjust indices based on actual file structure)
+        if len(fields) > 0:
+            attributes["NotionalCurrency"] = fields[0]
+        if len(fields) > 1:
+            attributes["OtherNotionalCurrency"] = fields[1]
+        
+        # Product-specific attributes
+        if use_case == "Forward":
+            if len(fields) > 2:
+                attributes["DeliveryType"] = fields[2]
+        elif use_case == "NDF":
+            if len(fields) > 2:
+                attributes["SettlementCurrency"] = fields[2]
+        elif use_case in ["Digital_Option", "Vanilla_Option"]:
+            if len(fields) > 2:
+                attributes["OptionType"] = fields[2]
+            if len(fields) > 3:
+                attributes["OptionExerciseStyle"] = fields[3]
+            if len(fields) > 4:
+                attributes["DeliveryType"] = fields[4]
+            if use_case == "Digital_Option" and len(fields) > 5:
+                attributes["ValuationMethodorTrigger"] = fields[5]
+                if len(fields) > 6:
+                    attributes["SettlementCurrency"] = fields[6]
+        elif use_case == "FX_Swap":
+            if len(fields) > 2:
+                attributes["DeliveryType"] = fields[2]
+        
+        record["Attributes"] = attributes
+    
+    def parse_ir_attributes(self, record, fields, use_case):
+        """Parse IR attributes from fields"""
+        attributes = {}
+        
+        # Common IR attributes (adjust indices based on actual file structure)
+        if len(fields) > 0:
+            attributes["NotionalCurrency"] = fields[0]
+        if len(fields) > 1:
+            attributes["ReferenceRate"] = fields[1]
+        if len(fields) > 2:
+            try:
+                attributes["ReferenceRateTermValue"] = int(fields[2]) if fields[2] else None
+            except ValueError:
+                attributes["ReferenceRateTermValue"] = None
+        if len(fields) > 3:
+            attributes["ReferenceRateTermUnit"] = fields[3]
+        if len(fields) > 4:
+            attributes["NotionalSchedule"] = fields[4]
+        if len(fields) > 5:
+            attributes["DeliveryType"] = fields[5]
+        
+        # Product-specific attributes
+        if use_case in ["Basis", "Basis_OIS", "Cross_Currency_Basis"]:
+            if len(fields) > 6:
+                attributes["OtherLegReferenceRate"] = fields[6]
+            if len(fields) > 7:
+                try:
+                    attributes["OtherLegReferenceRateTermValue"] = int(fields[7]) if fields[7] else None
+                except ValueError:
+                    attributes["OtherLegReferenceRateTermValue"] = None
+            if len(fields) > 8:
+                attributes["OtherLegReferenceRateTermUnit"] = fields[8]
+        
+        if use_case.startswith("Cross_Currency"):
+            if len(fields) > 9:
+                attributes["OtherNotionalCurrency"] = fields[9]
+        
+        record["Attributes"] = attributes
+    
     def load_data(self):
         try:
             # Check if files are selected
             if not self.upi_file_path.get() or not self.trade_file_path.get():
-                messagebox.showerror("Error", "Please select both UPI JSON file and Trade Excel file")
+                messagebox.showerror("Error", "Please select both UPI RECORDS file and Trade Excel file")
                 return
             
-            # Load UPI data
-            with open(self.upi_file_path.get(), 'r') as f:
-                self.upi_data = json.load(f)
+            # Load UPI data from RECORDS file
+            self.upi_data = self.parse_records_file(self.upi_file_path.get())
             
             # Load trade data
             self.trade_data = pd.read_excel(self.trade_file_path.get())
@@ -163,7 +321,7 @@ class UPISearchTool:
             self.extract_available_products()
             
             # Update status
-            upi_count = len(self.upi_data) if isinstance(self.upi_data, list) else 1
+            upi_count = len(self.upi_data)
             self.status_upload.set(f"Files loaded successfully. UPI records: {upi_count} | Trade records: {len(self.trade_data)}")
             
             # Setup product selection
@@ -182,21 +340,11 @@ class UPISearchTool:
         self.available_products = []
         
         try:
-            # Handle different UPI data structures
-            if isinstance(self.upi_data, dict):
-                # Single UPI record
-                upi_records = [self.upi_data]
-            elif isinstance(self.upi_data, list):
-                # Multiple UPI records
-                upi_records = self.upi_data
-            else:
-                raise ValueError("Unexpected UPI data format")
-            
             # Extract products based on asset class
             asset_class_filter = "Foreign_Exchange" if self.asset_class.get() == "FX" else "Rates"
             
             products = set()
-            for upi in upi_records:
+            for upi in self.upi_data:
                 header = upi.get("Header", {})
                 if header.get("AssetClass") == asset_class_filter:
                     use_case = header.get("UseCase")
@@ -474,21 +622,12 @@ class UPISearchTool:
         result = {"TradeDetails": trade.to_dict(), "MatchedUPI": None, "Score": 0, "Message": ""}
         
         try:
-            # Handle different UPI data structures
-            if isinstance(self.upi_data, dict):
-                upi_records = [self.upi_data]
-            elif isinstance(self.upi_data, list):
-                upi_records = self.upi_data
-            else:
-                result["Message"] = "Invalid UPI data format"
-                return result
-            
             # Filter UPIs by asset class and product
             asset_class_filter = "Foreign_Exchange" if self.asset_class.get() == "FX" else "Rates"
             product_filter = self.product_type.get()
             
             relevant_upis = []
-            for upi in upi_records:
+            for upi in self.upi_data:
                 header = upi.get("Header", {})
                 if (header.get("AssetClass") == asset_class_filter and 
                     header.get("UseCase") == product_filter):
@@ -508,13 +647,14 @@ class UPISearchTool:
                     best_score = score
                     best_match = upi
             
-            # Set result based on best match
-            if best_match and best_score >= 80:  # Require at least 50% match
+            # Set result based on best match - ADJUSTABLE THRESHOLD HERE
+            threshold_score = 70  # You can change this value to set a higher threshold
+            if best_match and best_score >= threshold_score:
                 result["MatchedUPI"] = best_match
                 result["Score"] = best_score
-                result["Message"] = f"UPI found with match score: {best_score}"
+                result["Message"] = f"UPI found with match score: {best_score}%"
             else:
-                result["Message"] = f"No matching UPI found with sufficient confidence (best score: {best_score})"
+                result["Message"] = f"No matching UPI found with sufficient confidence (best score: {best_score}%, threshold: {threshold_score}%)"
             
         except Exception as e:
             result["Message"] = f"Error during UPI search: {str(e)}"
