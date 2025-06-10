@@ -1,4 +1,3 @@
-
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 import pandas as pd
@@ -11,8 +10,8 @@ import traceback
 class UPISearchTool:
     def __init__(self, root):
         self.root = root
-        self.root.title("UPI Search Automation Tool")
-        self.root.geometry("1000x800")
+        self.root.title("UPI Search Automation Tool - DSB Schema")
+        self.root.geometry("1200x900")
         
         # Initialize variables
         self.upi_data = None
@@ -20,8 +19,10 @@ class UPISearchTool:
         self.upi_file_path = tk.StringVar()
         self.trade_file_path = tk.StringVar()
         self.asset_class = tk.StringVar(value="FX")
+        self.product_type = tk.StringVar()
         self.mapping_dict = {}
         self.results = []
+        self.available_products = []
         
         # Create UI
         self.create_ui()
@@ -35,18 +36,23 @@ class UPISearchTool:
         self.tab1 = ttk.Frame(notebook)
         self.tab2 = ttk.Frame(notebook)
         self.tab3 = ttk.Frame(notebook)
+        self.tab4 = ttk.Frame(notebook)
         
         notebook.add(self.tab1, text="Upload Files")
-        notebook.add(self.tab2, text="Map Columns")
-        notebook.add(self.tab3, text="Results")
+        notebook.add(self.tab2, text="Select Product")
+        notebook.add(self.tab3, text="Map Columns")
+        notebook.add(self.tab4, text="Results")
         
         # Tab 1 - File Upload
         self.create_upload_tab()
         
-        # Tab 2 - Column Mapping
+        # Tab 2 - Product Selection
+        self.create_product_selection_tab()
+        
+        # Tab 3 - Column Mapping
         self.create_mapping_tab()
         
-        # Tab 3 - Results
+        # Tab 4 - Results
         self.create_results_tab()
     
     def create_upload_tab(self):
@@ -80,32 +86,51 @@ class UPISearchTool:
         self.status_upload = tk.StringVar()
         ttk.Label(self.tab1, textvariable=self.status_upload).pack(pady=5)
     
+    def create_product_selection_tab(self):
+        # Product selection frame
+        product_frame = ttk.LabelFrame(self.tab2, text="Select Product Type")
+        product_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Instructions
+        ttk.Label(product_frame, text="Please load data files first, then select the product type for your trades:").pack(pady=10)
+        
+        # Product selection dropdown
+        self.product_label = ttk.Label(product_frame, text="Product Type:")
+        self.product_dropdown = ttk.Combobox(product_frame, textvariable=self.product_type, width=40, state="readonly")
+        
+        # Continue button
+        self.continue_button = ttk.Button(self.tab2, text="Continue to Column Mapping", command=self.proceed_to_mapping)
+        
+        # Status display
+        self.status_product = tk.StringVar()
+        ttk.Label(self.tab2, textvariable=self.status_product).pack(pady=5)
+    
     def create_mapping_tab(self):
-        # This will be populated after loading the files
-        self.mapping_frame = ttk.Frame(self.tab2)
+        # This will be populated after product selection
+        self.mapping_frame = ttk.Frame(self.tab3)
         self.mapping_frame.pack(fill='both', expand=True, padx=10, pady=10)
         
-        ttk.Label(self.mapping_frame, text="Please load data files first in the 'Upload Files' tab").pack(pady=20)
+        ttk.Label(self.mapping_frame, text="Please select product type first in the 'Select Product' tab").pack(pady=20)
         
         # Map Button (initially hidden)
-        self.map_button = ttk.Button(self.tab2, text="Map Columns & Search UPIs", command=self.search_upis)
+        self.map_button = ttk.Button(self.tab3, text="Map Columns & Search UPIs", command=self.search_upis)
         
         # Status display
         self.status_mapping = tk.StringVar()
-        self.status_label_mapping = ttk.Label(self.tab2, textvariable=self.status_mapping)
+        self.status_label_mapping = ttk.Label(self.tab3, textvariable=self.status_mapping)
         self.status_label_mapping.pack(pady=5)
     
     def create_results_tab(self):
         # Results display
-        results_frame = ttk.Frame(self.tab3)
+        results_frame = ttk.Frame(self.tab4)
         results_frame.pack(fill='both', expand=True, padx=10, pady=10)
         
         # Create a scrolled text widget for displaying results
-        self.results_text = scrolledtext.ScrolledText(results_frame, wrap=tk.WORD, width=90, height=30)
+        self.results_text = scrolledtext.ScrolledText(results_frame, wrap=tk.WORD, width=100, height=35)
         self.results_text.pack(fill='both', expand=True, padx=5, pady=5)
         
         # Export button
-        self.export_button = ttk.Button(self.tab3, text="Export Results to Excel", command=self.export_results)
+        self.export_button = ttk.Button(self.tab4, text="Export Results to Excel", command=self.export_results)
         
         # Initially display message
         self.results_text.insert(tk.END, "Results will be displayed here after mapping and searching.")
@@ -134,176 +159,282 @@ class UPISearchTool:
             # Load trade data
             self.trade_data = pd.read_excel(self.trade_file_path.get())
             
+            # Extract available products based on asset class
+            self.extract_available_products()
+            
             # Update status
-            self.status_upload.set(f"Files loaded successfully. UPI records: {len(self.upi_data.get('upis', []))} | Trade records: {len(self.trade_data)}")
+            upi_count = len(self.upi_data) if isinstance(self.upi_data, list) else 1
+            self.status_upload.set(f"Files loaded successfully. UPI records: {upi_count} | Trade records: {len(self.trade_data)}")
             
-            # Create mapping UI
-            self.create_mapping_ui()
+            # Setup product selection
+            self.setup_product_selection()
             
-            # Switch to mapping tab
-            self.root.focus_force()
+            # Switch to product selection tab
+            notebook = self.tab2.master
+            notebook.select(1)  # Select the second tab (index 1)
             
         except Exception as e:
             messagebox.showerror("Error", f"Error loading files: {str(e)}")
             self.status_upload.set(f"Error: {str(e)}")
     
+    def extract_available_products(self):
+        """Extract available product types from the loaded UPI data based on asset class"""
+        self.available_products = []
+        
+        try:
+            # Handle different UPI data structures
+            if isinstance(self.upi_data, dict):
+                # Single UPI record
+                upi_records = [self.upi_data]
+            elif isinstance(self.upi_data, list):
+                # Multiple UPI records
+                upi_records = self.upi_data
+            else:
+                raise ValueError("Unexpected UPI data format")
+            
+            # Extract products based on asset class
+            asset_class_filter = "Foreign_Exchange" if self.asset_class.get() == "FX" else "Rates"
+            
+            products = set()
+            for upi in upi_records:
+                header = upi.get("Header", {})
+                if header.get("AssetClass") == asset_class_filter:
+                    use_case = header.get("UseCase")
+                    if use_case:
+                        products.add(use_case)
+            
+            self.available_products = sorted(list(products))
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Error extracting products: {str(e)}")
+            self.available_products = []
+    
+    def setup_product_selection(self):
+        """Setup the product selection dropdown"""
+        if self.available_products:
+            self.product_label.pack(pady=5)
+            self.product_dropdown['values'] = self.available_products
+            self.product_dropdown.pack(pady=5)
+            self.continue_button.pack(pady=20)
+            
+            # Auto-select first product if only one available
+            if len(self.available_products) == 1:
+                self.product_type.set(self.available_products[0])
+            
+            self.status_product.set(f"Found {len(self.available_products)} product types for {self.asset_class.get()}")
+        else:
+            self.status_product.set("No products found for the selected asset class")
+    
+    def proceed_to_mapping(self):
+        """Proceed to column mapping after product selection"""
+        if not self.product_type.get():
+            messagebox.showerror("Error", "Please select a product type")
+            return
+        
+        # Create mapping UI based on selected product
+        self.create_mapping_ui()
+        
+        # Switch to mapping tab
+        notebook = self.tab3.master
+        notebook.select(2)  # Select the third tab (index 2)
+    
     def create_mapping_ui(self):
+        """Create mapping UI based on selected asset class and product"""
         # Clear existing widgets in mapping frame
         for widget in self.mapping_frame.winfo_children():
             widget.destroy()
         
-        # Create a notebook for different mapping sections
-        mapping_notebook = ttk.Notebook(self.mapping_frame)
-        mapping_notebook.pack(fill='both', expand=True)
+        # Create scrollable frame for mapping
+        canvas = tk.Canvas(self.mapping_frame)
+        scrollbar = ttk.Scrollbar(self.mapping_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
         
-        # Create mapping tabs based on asset class
-        if self.asset_class.get() == "FX":
-            # Create FX mapping tab
-            fx_tab = ttk.Frame(mapping_notebook)
-            mapping_notebook.add(fx_tab, text="FX Mapping")
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Get mapping fields based on asset class and product
+        mapping_fields = self.get_mapping_fields()
+        
+        # Create header
+        ttk.Label(scrollable_frame, text=f"Map your Excel columns to UPI search attributes", 
+                 font=("Arial", 12, "bold")).grid(row=0, column=0, columnspan=3, pady=10)
+        ttk.Label(scrollable_frame, text=f"Asset Class: {self.asset_class.get()} | Product: {self.product_type.get()}", 
+                 font=("Arial", 10)).grid(row=1, column=0, columnspan=3, pady=5)
+        
+        # Dictionary to store the mapping variables
+        self.mapping_vars = {}
+        
+        row = 2
+        for label, field_name, required in mapping_fields:
+            # Label with required indicator
+            label_text = label + (" *" if required else "")
+            ttk.Label(scrollable_frame, text=label_text).grid(row=row, column=0, padx=5, pady=5, sticky='w')
             
-            # Create mapping widgets for FX
-            self.create_fx_mapping_widgets(fx_tab)
+            # Create variable and dropdown for mapping
+            var = tk.StringVar()
+            self.mapping_vars[field_name] = var
             
-        elif self.asset_class.get() == "IR":
-            # Create IR mapping tab
-            ir_tab = ttk.Frame(mapping_notebook)
-            mapping_notebook.add(ir_tab, text="IR Mapping")
+            # Add columns and "N/A" option
+            columns = list(self.trade_data.columns) + ["N/A"]
             
-            # Create mapping widgets for IR
-            self.create_ir_mapping_widgets(ir_tab)
+            # Try to auto-select a matching column
+            auto_select = self.find_matching_column(label, columns)
+            if auto_select:
+                var.set(auto_select)
+            else:
+                var.set("N/A" if not required else columns[0])
+            
+            dropdown = ttk.Combobox(scrollable_frame, textvariable=var, values=columns, width=40)
+            dropdown.grid(row=row, column=1, padx=5, pady=5)
+            
+            # Add description
+            description = self.get_field_description(field_name)
+            ttk.Label(scrollable_frame, text=description, font=("Arial", 8), foreground="gray").grid(row=row, column=2, padx=5, pady=5, sticky='w')
+            
+            row += 1
+        
+        # Pack canvas and scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
         
         # Show map button
         self.map_button.pack(pady=10)
     
-    def create_fx_mapping_widgets(self, parent):
-        # Display available columns from trade data
-        ttk.Label(parent, text="Map your Excel columns to UPI search attributes").grid(row=0, column=0, columnspan=3, pady=10)
+    def get_mapping_fields(self):
+        """Get mapping fields based on asset class and product type"""
+        asset_class = self.asset_class.get()
+        product = self.product_type.get()
         
-        # Create mapping fields for FX
-        row = 1
-        
-        # Create all mapping fields
-        mapping_fields = [
-            ("Asset Class", "assetClass"),
-            ("Instrument Type", "instrumentType"),
-            ("Product Type", "product"),
-            ("Currency Pair", "currencyPair"),
-            ("Settlement Currency", "settlementCurrency"),
-            ("Option Type", "optionType"),
-            ("Option Style", "optionStyle"),
-            ("Delivery Type", "deliveryType")
-        ]
-        
-        # Dictionary to store the mapping variables
-        self.mapping_vars = {}
-        
-        for label, field_name in mapping_fields:
-            ttk.Label(parent, text=label + ":").grid(row=row, column=0, padx=5, pady=5, sticky='w')
-            
-            # Create variable and dropdown for mapping
-            var = tk.StringVar()
-            self.mapping_vars[field_name] = var
-            
-            # Add a "Not Applicable" option
-            columns = list(self.trade_data.columns) + ["N/A"]
-            
-            # Try to auto-select a matching column
-            auto_select = self.find_matching_column(label, columns)
-            if auto_select:
-                var.set(auto_select)
-            else:
-                var.set(columns[0])
-            
-            dropdown = ttk.Combobox(parent, textvariable=var, values=columns, width=30)
-            dropdown.grid(row=row, column=1, padx=5, pady=5)
-            
-            row += 1
+        if asset_class == "FX":
+            return self.get_fx_mapping_fields(product)
+        else:  # IR
+            return self.get_ir_mapping_fields(product)
     
-    def create_ir_mapping_widgets(self, parent):
-        # Display available columns from trade data
-        ttk.Label(parent, text="Map your Excel columns to UPI search attributes").grid(row=0, column=0, columnspan=3, pady=10)
-        
-        # Create mapping fields for IR
-        row = 1
-        
-        # Create all mapping fields
-        mapping_fields = [
-            ("Asset Class", "assetClass"),
-            ("Instrument Type", "instrumentType"),
-            ("Product Type", "product"),
-            ("Reference Rate", "referenceRate"),
-            ("Currency", "currency"),
-            ("Term", "term"),
-            ("Other Leg Reference Rate", "otherLegReferenceRate"),
-            ("Other Leg Currency", "otherLegCurrency"),
-            ("Other Leg Term", "otherLegTerm"),
-            ("Delivery Type", "deliveryType")
+    def get_fx_mapping_fields(self, product):
+        """Get FX mapping fields based on product type"""
+        # Common FX fields
+        fields = [
+            ("Notional Currency", "NotionalCurrency", True),
+            ("Other Notional Currency", "OtherNotionalCurrency", True),
         ]
         
-        # Dictionary to store the mapping variables
-        self.mapping_vars = {}
+        # Product-specific fields
+        if product == "Forward":
+            fields.extend([
+                ("Delivery Type", "DeliveryType", True),
+            ])
+        elif product == "NDF":
+            fields.extend([
+                ("Settlement Currency", "SettlementCurrency", True),
+            ])
+        elif product == "Non_Standard":
+            fields.extend([
+                ("Settlement Currency", "SettlementCurrency", False),
+                ("Underlying Asset Type", "UnderlyingAssetType", True),
+                ("Return or Payout Trigger", "ReturnorPayoutTrigger", True),
+                ("Delivery Type", "DeliveryType", True),
+                ("Place of Settlement", "PlaceofSettlement", False),
+            ])
+        elif product in ["Digital_Option", "Vanilla_Option"]:
+            fields.extend([
+                ("Option Type", "OptionType", True),
+                ("Option Exercise Style", "OptionExerciseStyle", True),
+                ("Delivery Type", "DeliveryType", True),
+            ])
+            if product == "Digital_Option":
+                fields.extend([
+                    ("Valuation Method or Trigger", "ValuationMethodorTrigger", True),
+                    ("Settlement Currency", "SettlementCurrency", True),
+                ])
+        elif product == "FX_Swap":
+            fields.extend([
+                ("Delivery Type", "DeliveryType", True),
+            ])
         
-        for label, field_name in mapping_fields:
-            ttk.Label(parent, text=label + ":").grid(row=row, column=0, padx=5, pady=5, sticky='w')
-            
-            # Create variable and dropdown for mapping
-            var = tk.StringVar()
-            self.mapping_vars[field_name] = var
-            
-            # Add a "Not Applicable" option
-            columns = list(self.trade_data.columns) + ["N/A"]
-            
-            # Try to auto-select a matching column
-            auto_select = self.find_matching_column(label, columns)
-            if auto_select:
-                var.set(auto_select)
-            else:
-                var.set(columns[0])
-            
-            dropdown = ttk.Combobox(parent, textvariable=var, values=columns, width=30)
-            dropdown.grid(row=row, column=1, padx=5, pady=5)
-            
-            row += 1
+        return fields
+    
+    def get_ir_mapping_fields(self, product):
+        """Get IR mapping fields based on product type"""
+        # Common IR fields
+        fields = [
+            ("Notional Currency", "NotionalCurrency", True),
+            ("Reference Rate", "ReferenceRate", True),
+            ("Reference Rate Term Value", "ReferenceRateTermValue", True),
+            ("Reference Rate Term Unit", "ReferenceRateTermUnit", True),
+            ("Notional Schedule", "NotionalSchedule", True),
+            ("Delivery Type", "DeliveryType", True),
+        ]
+        
+        # Product-specific fields
+        if product in ["Basis", "Basis_OIS", "Cross_Currency_Basis"]:
+            fields.extend([
+                ("Other Leg Reference Rate", "OtherLegReferenceRate", True),
+                ("Other Leg Reference Rate Term Value", "OtherLegReferenceRateTermValue", True),
+                ("Other Leg Reference Rate Term Unit", "OtherLegReferenceRateTermUnit", True),
+            ])
+        
+        if product.startswith("Cross_Currency"):
+            fields.extend([
+                ("Other Notional Currency", "OtherNotionalCurrency", True),
+            ])
+        
+        return fields
+    
+    def get_field_description(self, field_name):
+        """Get description for mapping fields"""
+        descriptions = {
+            "NotionalCurrency": "Currency in which the notional is denominated (e.g., USD, EUR)",
+            "OtherNotionalCurrency": "Currency for leg 2 in cross-currency contracts",
+            "DeliveryType": "CASH or PHYS",
+            "SettlementCurrency": "Currency for settlement",
+            "UnderlyingAssetType": "Spot, Forward, Options, or Futures",
+            "ReturnorPayoutTrigger": "Payout mechanism",
+            "PlaceofSettlement": "Country/location of settlement",
+            "OptionType": "CALL, PUTO, or OPTL",
+            "OptionExerciseStyle": "AMER, BERM, or EURO",
+            "ValuationMethodorTrigger": "Digital (Binary) or Digital Barrier",
+            "ReferenceRate": "Reference rate identifier (e.g., USD-LIBOR-3M)",
+            "ReferenceRateTermValue": "Numeric value for term (e.g., 3 for 3M)",
+            "ReferenceRateTermUnit": "DAYS, WEEK, MNTH, or YEAR",
+            "NotionalSchedule": "Constant, Accreting, Amortizing, or Custom",
+            "OtherLegReferenceRate": "Reference rate for second leg",
+            "OtherLegReferenceRateTermValue": "Term value for second leg",
+            "OtherLegReferenceRateTermUnit": "Term unit for second leg",
+        }
+        return descriptions.get(field_name, "")
     
     def find_matching_column(self, label, columns):
         """Try to automatically match a label to a column name"""
         # Remove spaces and convert to lowercase for comparison
-        label_simple = label.lower().replace(" ", "")
+        label_simple = label.lower().replace(" ", "").replace("*", "")
         
         for col in columns:
-            col_simple = col.lower().replace(" ", "")
+            if col == "N/A":
+                continue
+                
+            col_simple = col.lower().replace(" ", "").replace("_", "")
             
             # Check for exact match or partial match
             if col_simple == label_simple or label_simple in col_simple or col_simple in label_simple:
                 return col
             
             # Check for common abbreviations and synonyms
-            if label == "Asset Class" and ("asset" in col_simple or "class" in col_simple or col_simple == "assetclass"):
+            if "currency" in label.lower() and ("ccy" in col_simple or "currency" in col_simple):
                 return col
-            elif label == "Instrument Type" and ("instrument" in col_simple or "type" in col_simple or "producttype" in col_simple):
+            elif "delivery" in label.lower() and ("delivery" in col_simple or "settlement" in col_simple):
                 return col
-            elif label == "Product Type" and ("product" in col_simple or "swaptype" in col_simple or "forwardtype" in col_simple):
+            elif "reference" in label.lower() and "rate" in label.lower() and ("ref" in col_simple or "rate" in col_simple):
                 return col
-            elif label == "Currency Pair" and ("ccy" in col_simple or "pair" in col_simple or "ccypair" in col_simple):
+            elif "term" in label.lower() and ("term" in col_simple or "tenor" in col_simple):
                 return col
-            elif label == "Reference Rate" and ("ref" in col_simple or "rate" in col_simple or "refrate" in col_simple):
+            elif "option" in label.lower() and "type" in label.lower() and ("option" in col_simple and "type" in col_simple):
                 return col
-            elif label == "Currency" and ("currency" in col_simple or "ccy" in col_simple or col_simple == "ccy1" or col_simple == "currency1"):
-                return col
-            elif label == "Term" and ("term" in col_simple or "tenor" in col_simple or col_simple == "term1"):
-                return col
-            elif label == "Other Leg Reference Rate" and ("other" in col_simple or "leg" in col_simple or "refrate2" in col_simple):
-                return col
-            elif label == "Other Leg Currency" and ("other" in col_simple or "leg" in col_simple or "currency2" in col_simple or "ccy2" in col_simple):
-                return col
-            elif label == "Other Leg Term" and ("other" in col_simple or "leg" in col_simple or "term2" in col_simple):
-                return col
-            elif label == "Delivery Type" and ("delivery" in col_simple or "settlement" in col_simple or "settlementtype" in col_simple):
-                return col
-            elif label == "Option Type" and ("option" in col_simple and "type" in col_simple):
-                return col
-            elif label == "Option Style" and ("option" in col_simple and "style" in col_simple):
+            elif "option" in label.lower() and "style" in label.lower() and ("style" in col_simple or "exercise" in col_simple):
                 return col
                 
         return None
@@ -332,8 +463,8 @@ class UPISearchTool:
             self.status_mapping.set(f"UPI search completed. {len(self.results)} trades processed.")
             
             # Switch to results tab
-            notebook = self.tab3.master
-            notebook.select(2)  # Select the third tab (index 2)
+            notebook = self.tab4.master
+            notebook.select(3)  # Select the fourth tab (index 3)
             
         except Exception as e:
             messagebox.showerror("Error", f"Error searching UPIs: {str(e)}\n{traceback.format_exc()}")
@@ -342,106 +473,37 @@ class UPISearchTool:
     def find_matching_upi(self, trade, mapping):
         result = {"TradeDetails": trade.to_dict(), "MatchedUPI": None, "Score": 0, "Message": ""}
         
-        # Get UPI data
-        upis = self.upi_data.get("upis", [])
-        if not upis:
-            result["Message"] = "No UPI records found in the UPI data"
-            return result
-        
-        # Initialize asset class specific search criteria
-        if self.asset_class.get() == "FX":
-            search_result = self.search_fx_upi(trade, mapping, upis)
-        else:  # IR
-            search_result = self.search_ir_upi(trade, mapping, upis)
-        
-        # Update result with search results
-        result.update(search_result)
-        
-        return result
-    
-    def search_fx_upi(self, trade, mapping, upis):
-        result = {"MatchedUPI": None, "Score": 0, "Message": ""}
-        
-        # Extract values from trade data based on mapping
         try:
-            # Asset class could be "FX" or "ForeignExchange" in different systems
-            asset_class_col = mapping["assetClass"]
-            asset_class = trade[asset_class_col] if asset_class_col != "N/A" else None
-            if asset_class and "fx" in asset_class.lower():
-                asset_class = "ForeignExchange"
+            # Handle different UPI data structures
+            if isinstance(self.upi_data, dict):
+                upi_records = [self.upi_data]
+            elif isinstance(self.upi_data, list):
+                upi_records = self.upi_data
+            else:
+                result["Message"] = "Invalid UPI data format"
+                return result
             
-            instrument_type_col = mapping["instrumentType"]
-            instrument_type = trade[instrument_type_col] if instrument_type_col != "N/A" else None
+            # Filter UPIs by asset class and product
+            asset_class_filter = "Foreign_Exchange" if self.asset_class.get() == "FX" else "Rates"
+            product_filter = self.product_type.get()
             
-            product_col = mapping["product"]
-            product = trade[product_col] if product_col != "N/A" else None
+            relevant_upis = []
+            for upi in upi_records:
+                header = upi.get("Header", {})
+                if (header.get("AssetClass") == asset_class_filter and 
+                    header.get("UseCase") == product_filter):
+                    relevant_upis.append(upi)
             
-            ccy_pair_col = mapping["currencyPair"]
-            ccy_pair = trade[ccy_pair_col] if ccy_pair_col != "N/A" else None
+            if not relevant_upis:
+                result["Message"] = f"No UPI records found for {asset_class_filter} {product_filter}"
+                return result
             
-            settlement_ccy_col = mapping["settlementCurrency"]
-            settlement_ccy = trade[settlement_ccy_col] if settlement_ccy_col != "N/A" else None
-            
-            option_type_col = mapping["optionType"]
-            option_type = trade[option_type_col] if option_type_col != "N/A" else None
-            
-            option_style_col = mapping["optionStyle"]
-            option_style = trade[option_style_col] if option_style_col != "N/A" else None
-            
-            delivery_type_col = mapping["deliveryType"]
-            delivery_type = trade[delivery_type_col] if delivery_type_col != "N/A" else None
-            
-            # Match logic for FX UPIs
+            # Perform matching
             best_match = None
             best_score = 0
             
-            for upi in upis:
-                # Initialize score for this UPI
-                score = 0
-                
-                # Check asset class match
-                if asset_class and upi.get("assetClass") == asset_class:
-                    score += 20
-                elif asset_class and (
-                    ("fx" in asset_class.lower() and upi.get("assetClass") == "ForeignExchange") or
-                    (asset_class.lower() == "foreignexchange" and "fx" in upi.get("assetClass", "").lower())
-                ):
-                    score += 15  # Partial match
-                
-                # Check instrument type match
-                if instrument_type and upi.get("instrumentType") == instrument_type:
-                    score += 20
-                
-                # Check product match
-                if product and upi.get("product") == product:
-                    score += 20
-                
-                # Check currency pair match
-                if ccy_pair and upi.get("underlying", {}).get("currencyPair") == ccy_pair:
-                    score += 20
-                
-                # Check settlement currency match
-                if settlement_ccy and upi.get("underlying", {}).get("settlementCurrency") == settlement_ccy:
-                    score += 10
-                
-                # Check option type match for options
-                if option_type and upi.get("optionType") == option_type:
-                    score += 5
-                
-                # Check option style match for options
-                if option_style and upi.get("optionStyle") == option_style:
-                    score += 5
-                
-                # Check delivery type match
-                if delivery_type and upi.get("deliveryType") == delivery_type:
-                    score += 10
-                elif delivery_type and (
-                    (delivery_type.lower() == "cash" and upi.get("deliveryType") == "Cash") or
-                    (delivery_type.lower() == "physical" and upi.get("deliveryType") == "Physical")
-                ):
-                    score += 8  # Case-insensitive match
-                
-                # Update best match if this UPI has a higher score
+            for upi in relevant_upis:
+                score = self.calculate_upi_score(trade, mapping, upi)
                 if score > best_score:
                     best_score = score
                     best_match = upi
@@ -450,130 +512,113 @@ class UPISearchTool:
             if best_match and best_score >= 50:  # Require at least 50% match
                 result["MatchedUPI"] = best_match
                 result["Score"] = best_score
-                result["Message"] = "UPI found with match score: " + str(best_score)
+                result["Message"] = f"UPI found with match score: {best_score}"
             else:
-                result["Message"] = "No matching UPI found with sufficient confidence"
+                result["Message"] = f"No matching UPI found with sufficient confidence (best score: {best_score})"
             
         except Exception as e:
-            result["Message"] = f"Error during FX UPI search: {str(e)}"
+            result["Message"] = f"Error during UPI search: {str(e)}"
         
         return result
     
-    def search_ir_upi(self, trade, mapping, upis):
-        result = {"MatchedUPI": None, "Score": 0, "Message": ""}
+    def calculate_upi_score(self, trade, mapping, upi):
+        """Calculate matching score between trade and UPI"""
+        score = 0
+        max_score = 0
         
-        # Extract values from trade data based on mapping
-        try:
-            # Asset class could be "IR", "Rates" or "InterestRate" in different systems
-            asset_class_col = mapping["assetClass"]
-            asset_class = trade[asset_class_col] if asset_class_col != "N/A" else None
-            if asset_class and "ir" in asset_class.lower():
-                asset_class = "Rates"
-            
-            instrument_type_col = mapping["instrumentType"]
-            instrument_type = trade[instrument_type_col] if instrument_type_col != "N/A" else None
-            
-            product_col = mapping["product"]
-            product = trade[product_col] if product_col != "N/A" else None
-            
-            ref_rate_col = mapping["referenceRate"]
-            ref_rate = trade[ref_rate_col] if ref_rate_col != "N/A" else None
-            
-            currency_col = mapping["currency"]
-            currency = trade[currency_col] if currency_col != "N/A" else None
-            
-            term_col = mapping["term"]
-            term = trade[term_col] if term_col != "N/A" else None
-            
-            other_ref_rate_col = mapping["otherLegReferenceRate"]
-            other_ref_rate = trade[other_ref_rate_col] if other_ref_rate_col != "N/A" else None
-            
-            other_currency_col = mapping["otherLegCurrency"]
-            other_currency = trade[other_currency_col] if other_currency_col != "N/A" else None
-            
-            other_term_col = mapping["otherLegTerm"]
-            other_term = trade[other_term_col] if other_term_col != "N/A" else None
-            
-            delivery_type_col = mapping["deliveryType"]
-            delivery_type = trade[delivery_type_col] if delivery_type_col != "N/A" else None
-            
-            # Match logic for IR UPIs
-            best_match = None
-            best_score = 0
-            
-            for upi in upis:
-                # Initialize score for this UPI
-                score = 0
-                
-                # Check asset class match
-                if asset_class and upi.get("assetClass") == asset_class:
-                    score += 20
-                elif asset_class and (
-                    ("ir" in asset_class.lower() and upi.get("assetClass") == "Rates") or
-                    (asset_class.lower() == "rates" and "ir" in upi.get("assetClass", "").lower())
-                ):
-                    score += 15  # Partial match
-                
-                # Check instrument type match
-                if instrument_type and upi.get("instrumentType") == instrument_type:
-                    score += 20
-                
-                # Check product match
-                if product and upi.get("product") == product:
-                    score += 20
-                
-                # Check reference rate match
-                if ref_rate and upi.get("underlying", {}).get("referenceRate") == ref_rate:
-                    score += 15
-                
-                # Check currency match
-                if currency and upi.get("underlying", {}).get("currency") == currency:
-                    score += 10
-                
-                # Check term match
-                if term and upi.get("underlying", {}).get("term") == term:
-                    score += 10
-                
-                # Check other leg reference rate match
-                if other_ref_rate and upi.get("otherLeg", {}).get("referenceRate") == other_ref_rate:
-                    score += 10
-                
-                # Check other leg currency match
-                if other_currency and upi.get("otherLeg", {}).get("currency") == other_currency:
-                    score += 5
-                
-                # Check other leg term match
-                if other_term and upi.get("otherLeg", {}).get("term") == other_term:
-                    score += 5
-                
-                # Check delivery type match
-                if delivery_type and upi.get("deliveryType") == delivery_type:
-                    score += 5
-                
-                # Update best match if this UPI has a higher score
-                if score > best_score:
-                    best_score = score
-                    best_match = upi
-            
-            # Set result based on best match
-            if best_match and best_score >= 50:  # Require at least 50% match
-                result["MatchedUPI"] = best_match
-                result["Score"] = best_score
-                result["Message"] = "UPI found with match score: " + str(best_score)
-            else:
-                result["Message"] = "No matching UPI found with sufficient confidence"
-            
-        except Exception as e:
-            result["Message"] = f"Error during IR UPI search: {str(e)}"
+        # Get UPI attributes
+        attributes = upi.get("Attributes", {})
         
-        return result
+        # Score each mapped field
+        for field_name, column_name in mapping.items():
+            if column_name == "N/A" or column_name not in trade:
+                continue
+            
+            trade_value = trade[column_name]
+            if pd.isna(trade_value) or trade_value == "":
+                continue
+            
+            # Get UPI value for this field
+            upi_value = attributes.get(field_name)
+            if upi_value is None:
+                continue
+            
+            # Calculate field score
+            field_score = self.calculate_field_score(field_name, trade_value, upi_value)
+            score += field_score
+            max_score += self.get_field_weight(field_name)
+        
+        # Return percentage score
+        return int((score / max_score * 100)) if max_score > 0 else 0
+    
+    def calculate_field_score(self, field_name, trade_value, upi_value):
+        """Calculate score for a specific field match"""
+        weight = self.get_field_weight(field_name)
+        
+        # Convert to strings for comparison
+        trade_str = str(trade_value).strip().upper()
+        upi_str = str(upi_value).strip().upper()
+        
+        # Exact match
+        if trade_str == upi_str:
+            return weight
+        
+        # Partial matches for specific fields
+        if field_name in ["DeliveryType"]:
+            if ("CASH" in trade_str and "CASH" in upi_str) or ("PHYS" in trade_str and "PHYS" in upi_str):
+                return weight * 0.8
+        
+        # Currency code matches (handle different formats)
+        if "Currency" in field_name:
+            if len(trade_str) == 3 and len(upi_str) == 3 and trade_str == upi_str:
+                return weight
+        
+        # Reference rate partial matches
+        if "ReferenceRate" in field_name:
+            if trade_str in upi_str or upi_str in trade_str:
+                return weight * 0.7
+        
+        return 0
+    
+    def get_field_weight(self, field_name):
+        """Get weight for different fields"""
+        weights = {
+            "NotionalCurrency": 25,
+            "OtherNotionalCurrency": 20,
+            "ReferenceRate": 20,
+            "ReferenceRateTermValue": 15,
+            "ReferenceRateTermUnit": 10,
+            "OtherLegReferenceRate": 15,
+            "OtherLegReferenceRateTermValue": 10,
+            "OtherLegReferenceRateTermUnit": 5,
+            "DeliveryType": 15,
+            "SettlementCurrency": 10,
+            "OptionType": 15,
+            "OptionExerciseStyle": 10,
+            "ValuationMethodorTrigger": 10,
+            "NotionalSchedule": 10,
+            "UnderlyingAssetType": 10,
+            "ReturnorPayoutTrigger": 10,
+            "PlaceofSettlement": 5,
+        }
+        return weights.get(field_name, 5)
     
     def display_results(self):
         self.results_text.delete(1.0, tk.END)
         
         # Write header
         self.results_text.insert(tk.END, "UPI Search Results\n")
-        self.results_text.insert(tk.END, "=" * 80 + "\n\n")
+        self.results_text.insert(tk.END, "=" * 100 + "\n\n")
+        self.results_text.insert(tk.END, f"Asset Class: {self.asset_class.get()} | Product: {self.product_type.get()}\n")
+        self.results_text.insert(tk.END, f"Total Trades Processed: {len(self.results)}\n\n")
+        
+        # Summary statistics
+        matched_count = sum(1 for r in self.results if r["MatchedUPI"] is not None)
+        avg_score = sum(r["Score"] for r in self.results) / len(self.results) if self.results else 0
+        
+        self.results_text.insert(tk.END, f"Matches Found: {matched_count}/{len(self.results)}\n")
+        self.results_text.insert(tk.END, f"Average Match Score: {avg_score:.1f}\n")
+        self.results_text.insert(tk.END, "=" * 100 + "\n\n")
         
         # Display results for each trade
         for i, result in enumerate(self.results):
@@ -589,53 +634,37 @@ class UPISearchTool:
             trade_id = next((trade_details[col] for col in trade_details if "id" in col.lower()), f"Trade {i+1}")
             self.results_text.insert(tk.END, f"Trade ID: {trade_id}\n")
             
-            # Display key trade details
+            # Display key trade details (only non-empty values)
             self.results_text.insert(tk.END, "Key Trade Details:\n")
             for key, value in trade_details.items():
-                if value and pd.notna(value) and not (isinstance(value, float) and pd.isna(value)):
+                if value and pd.notna(value) and str(value).strip():
                     self.results_text.insert(tk.END, f"  - {key}: {value}\n")
             
             # UPI match result
-            self.results_text.insert(tk.END, f"Match Score: {score}\n")
-            self.results_text.insert(tk.END, f"Message: {message}\n")
+            self.results_text.insert(tk.END, f"Match Score: {score}%\n")
+            self.results_text.insert(tk.END, f"Status: {message}\n")
             
             if matched_upi:
-                self.results_text.insert(tk.END, f"Matched UPI Code: {matched_upi.get('upiCode', 'N/A')}\n")
+                identifier = matched_upi.get("Identifier", {})
+                attributes = matched_upi.get("Attributes", {})
+                derived = matched_upi.get("Derived", {})
+                
+                self.results_text.insert(tk.END, f"Matched UPI Code: {identifier.get('UPI', 'N/A')}\n")
                 self.results_text.insert(tk.END, "UPI Details:\n")
                 
-                # Display UPI details
-                self.results_text.insert(tk.END, f"  - Asset Class: {matched_upi.get('assetClass', 'N/A')}\n")
-                self.results_text.insert(tk.END, f"  - Instrument Type: {matched_upi.get('instrumentType', 'N/A')}\n")
-                self.results_text.insert(tk.END, f"  - Product: {matched_upi.get('product', 'N/A')}\n")
+                # Display key UPI attributes
+                for key, value in attributes.items():
+                    if value:
+                        self.results_text.insert(tk.END, f"  - {key}: {value}\n")
                 
-                # Asset class specific details
-                if matched_upi.get('assetClass') == "ForeignExchange":
-                    underlying = matched_upi.get('underlying', {})
-                    self.results_text.insert(tk.END, f"  - Currency Pair: {underlying.get('currencyPair', 'N/A')}\n")
-                    if 'settlementCurrency' in underlying:
-                        self.results_text.insert(tk.END, f"  - Settlement Currency: {underlying.get('settlementCurrency', 'N/A')}\n")
-                    if 'optionType' in matched_upi:
-                        self.results_text.insert(tk.END, f"  - Option Type: {matched_upi.get('optionType', 'N/A')}\n")
-                    if 'optionStyle' in matched_upi:
-                        self.results_text.insert(tk.END, f"  - Option Style: {matched_upi.get('optionStyle', 'N/A')}\n")
-                
-                elif matched_upi.get('assetClass') == "Rates":
-                    underlying = matched_upi.get('underlying', {})
-                    self.results_text.insert(tk.END, f"  - Reference Rate: {underlying.get('referenceRate', 'N/A')}\n")
-                    self.results_text.insert(tk.END, f"  - Currency: {underlying.get('currency', 'N/A')}\n")
-                    self.results_text.insert(tk.END, f"  - Term: {underlying.get('term', 'N/A')}\n")
-                    
-                    # Other leg details if applicable
-                    if 'otherLeg' in matched_upi:
-                        other_leg = matched_upi.get('otherLeg', {})
-                        self.results_text.insert(tk.END, f"  - Other Leg Reference Rate: {other_leg.get('referenceRate', 'N/A')}\n")
-                        self.results_text.insert(tk.END, f"  - Other Leg Currency: {other_leg.get('currency', 'N/A')}\n")
-                        self.results_text.insert(tk.END, f"  - Other Leg Term: {other_leg.get('term', 'N/A')}\n")
-                
-                self.results_text.insert(tk.END, f"  - Delivery Type: {matched_upi.get('deliveryType', 'N/A')}\n")
+                # Display some derived attributes
+                if derived.get("ShortName"):
+                    self.results_text.insert(tk.END, f"  - Short Name: {derived.get('ShortName')}\n")
+                if derived.get("UnderlierName"):
+                    self.results_text.insert(tk.END, f"  - Underlier Name: {derived.get('UnderlierName')}\n")
             
             # Separator between trades
-            self.results_text.insert(tk.END, "\n" + "-" * 80 + "\n\n")
+            self.results_text.insert(tk.END, "\n" + "-" * 100 + "\n\n")
     
     def export_results(self):
         if not self.results:
@@ -655,7 +684,7 @@ class UPISearchTool:
             # Prepare data for export
             export_data = []
             
-            for result in self.results:
+            for i, result in enumerate(self.results):
                 trade_details = result["TradeDetails"]
                 matched_upi = result["MatchedUPI"]
                 
@@ -668,33 +697,26 @@ class UPISearchTool:
                 # Add UPI match details
                 row["Match_Score"] = result["Score"]
                 row["Match_Message"] = result["Message"]
+                row["Asset_Class"] = self.asset_class.get()
+                row["Product_Type"] = self.product_type.get()
                 
                 if matched_upi:
-                    row["UPI_Code"] = matched_upi.get("upiCode", "")
-                    row["UPI_AssetClass"] = matched_upi.get("assetClass", "")
-                    row["UPI_InstrumentType"] = matched_upi.get("instrumentType", "")
-                    row["UPI_Product"] = matched_upi.get("product", "")
-                    row["UPI_DeliveryType"] = matched_upi.get("deliveryType", "")
+                    identifier = matched_upi.get("Identifier", {})
+                    attributes = matched_upi.get("Attributes", {})
+                    derived = matched_upi.get("Derived", {})
                     
-                    # Asset class specific details
-                    if matched_upi.get('assetClass') == "ForeignExchange":
-                        underlying = matched_upi.get('underlying', {})
-                        row["UPI_CurrencyPair"] = underlying.get('currencyPair', "")
-                        row["UPI_SettlementCurrency"] = underlying.get('settlementCurrency', "")
-                        row["UPI_OptionType"] = matched_upi.get('optionType', "")
-                        row["UPI_OptionStyle"] = matched_upi.get('optionStyle', "")
+                    row["UPI_Code"] = identifier.get("UPI", "")
+                    row["UPI_Status"] = identifier.get("Status", "")
+                    row["UPI_LastUpdate"] = identifier.get("LastUpdateDateTime", "")
                     
-                    elif matched_upi.get('assetClass') == "Rates":
-                        underlying = matched_upi.get('underlying', {})
-                        row["UPI_ReferenceRate"] = underlying.get('referenceRate', "")
-                        row["UPI_Currency"] = underlying.get('currency', "")
-                        row["UPI_Term"] = underlying.get('term', "")
-                        
-                        if 'otherLeg' in matched_upi:
-                            other_leg = matched_upi.get('otherLeg', {})
-                            row["UPI_OtherLegReferenceRate"] = other_leg.get('referenceRate', "")
-                            row["UPI_OtherLegCurrency"] = other_leg.get('currency', "")
-                            row["UPI_OtherLegTerm"] = other_leg.get('term', "")
+                    # Add all attributes
+                    for key, value in attributes.items():
+                        row[f"UPI_{key}"] = value
+                    
+                    # Add key derived fields
+                    row["UPI_ShortName"] = derived.get("ShortName", "")
+                    row["UPI_UnderlierName"] = derived.get("UnderlierName", "")
+                    row["UPI_ClassificationType"] = derived.get("ClassificationType", "")
                 
                 export_data.append(row)
             
