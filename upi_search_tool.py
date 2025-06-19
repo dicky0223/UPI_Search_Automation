@@ -16,6 +16,10 @@ class UPISearchTool:
         self.trade_data = None
         self.results = None
         self.column_mappings = {}
+        self.available_products = []
+        
+        # Variables for product selection
+        self.product_type = tk.StringVar()
         
         # Create GUI
         self.create_widgets()
@@ -41,7 +45,7 @@ class UPISearchTool:
         upi_frame.pack(fill=tk.X, padx=10, pady=5)
         
         self.upi_file_var = tk.StringVar()
-        ttk.Label(upi_frame, text="UPI JSON File:").pack(anchor=tk.W)
+        ttk.Label(upi_frame, text="UPI RECORDS File:").pack(anchor=tk.W)
         file_frame = ttk.Frame(upi_frame)
         file_frame.pack(fill=tk.X, pady=5)
         ttk.Entry(file_frame, textvariable=self.upi_file_var, width=60).pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -74,34 +78,24 @@ class UPISearchTool:
         ttk.Label(upload_frame, textvariable=self.status_var).pack(pady=5)
     
     def create_mapping_tab(self):
-        """Create the column mapping tab"""
+        """Create the column mapping tab with product selection"""
         mapping_frame = ttk.Frame(self.notebook)
-        self.notebook.add(mapping_frame, text="Map Columns")
+        self.notebook.add(mapping_frame, text="Product Selection & Mapping")
         
-        # Instructions
-        instructions = ttk.Label(mapping_frame, text="Map your trade data columns to UPI attributes. Auto-suggestions are provided based on common naming patterns.")
-        instructions.pack(pady=10)
+        # Product Selection Frame (initially visible)
+        self.product_selection_frame = ttk.LabelFrame(mapping_frame, text="Product Selection", padding=10)
+        self.product_selection_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        # Mapping area
-        self.mapping_canvas = tk.Canvas(mapping_frame)
-        self.mapping_scrollbar = ttk.Scrollbar(mapping_frame, orient="vertical", command=self.mapping_canvas.yview)
-        self.mapping_scrollable_frame = ttk.Frame(self.mapping_canvas)
+        # Product selection widgets (will be created dynamically)
+        self.product_label = None
+        self.product_dropdown = None
+        self.continue_button = None
+        self.status_product = tk.StringVar(value="Load data first to see available products")
+        ttk.Label(self.product_selection_frame, textvariable=self.status_product).pack(pady=5)
         
-        self.mapping_scrollable_frame.bind(
-            "<Configure>",
-            lambda e: self.mapping_canvas.configure(scrollregion=self.mapping_canvas.bbox("all"))
-        )
-        
-        self.mapping_canvas.create_window((0, 0), window=self.mapping_scrollable_frame, anchor="nw")
-        self.mapping_canvas.configure(yscrollcommand=self.mapping_scrollbar.set)
-        
-        self.mapping_canvas.pack(side="left", fill="both", expand=True, padx=10)
-        self.mapping_scrollbar.pack(side="right", fill="y")
-        
-        # Search button
-        button_frame = ttk.Frame(mapping_frame)
-        button_frame.pack(fill=tk.X, padx=10, pady=10)
-        ttk.Button(button_frame, text="Map Columns & Search UPIs", command=self.search_upis).pack()
+        # Mapping UI Frame (initially hidden)
+        self.mapping_ui_frame = ttk.Frame(mapping_frame)
+        # Don't pack initially - will be shown after product selection
     
     def create_results_tab(self):
         """Create the results display tab"""
@@ -132,10 +126,10 @@ class UPISearchTool:
         ttk.Button(export_frame, text="Export Results to Excel", command=self.export_results).pack()
     
     def browse_upi_file(self):
-        """Browse for UPI JSON file"""
+        """Browse for UPI RECORDS file"""
         filename = filedialog.askopenfilename(
-            title="Select UPI JSON File",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+            title="Select UPI RECORDS File",
+            filetypes=[("RECORDS files", "*.RECORDS"), ("Text files", "*.txt"), ("All files", "*.*")]
         )
         if filename:
             self.upi_file_var.set(filename)
@@ -149,42 +143,298 @@ class UPISearchTool:
         if filename:
             self.trade_file_var.set(filename)
     
+    def parse_records_file(self, file_path):
+        """Parse RECORDS file format from DSB - JSON line format"""
+        try:
+            upi_records = []
+            
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            # Process each line as a JSON object
+            for line_num, line in enumerate(lines, 1):
+                line = line.strip()
+                
+                # Skip empty lines and comments
+                if not line or line.startswith('#'):
+                    continue
+                
+                try:
+                    # Parse each line as JSON
+                    record = json.loads(line)
+                    
+                    # Validate that it's a UPI record with required structure
+                    if not self.is_valid_upi_record(record):
+                        continue
+                    
+                    # Filter by asset class
+                    asset_class_filter = "Foreign_Exchange" if self.asset_class_var.get() == "FX" else "Rates"
+                    header = record.get("Header", {})
+                    
+                    if header.get("AssetClass") == asset_class_filter:
+                        upi_records.append(record)
+                        
+                except json.JSONDecodeError:
+                    continue
+                except Exception:
+                    continue
+            
+            if not upi_records:
+                raise ValueError(f"No valid UPI records found for asset class: {self.asset_class_var.get()}")
+            
+            return upi_records
+            
+        except Exception as e:
+            raise Exception(f"Error parsing RECORDS file: {str(e)}")
+    
+    def is_valid_upi_record(self, record):
+        """Validate that the record has the expected UPI structure"""
+        try:
+            # Check for required top-level keys
+            required_keys = ["Header", "Identifier", "Derived", "Attributes"]
+            if not all(key in record for key in required_keys):
+                return False
+            
+            # Check Header structure
+            header = record.get("Header", {})
+            if not all(key in header for key in ["AssetClass", "InstrumentType", "UseCase", "Level"]):
+                return False
+            
+            # Check Identifier structure
+            identifier = record.get("Identifier", {})
+            if not identifier.get("UPI"):
+                return False
+            
+            return True
+            
+        except Exception:
+            return False
+    
     def load_data(self):
         """Load UPI and trade data"""
         try:
-            # Load UPI data
-            upi_file = self.upi_file_var.get()
-            if not upi_file:
-                messagebox.showerror("Error", "Please select a UPI JSON file")
+            # Check if files are selected
+            if not self.upi_file_var.get() or not self.trade_file_var.get():
+                messagebox.showerror("Error", "Please select both UPI RECORDS file and Trade Excel file")
                 return
             
-            with open(upi_file, 'r') as f:
-                self.upi_data = json.load(f)
+            # Show loading status
+            self.status_var.set("Loading UPI data...")
+            self.root.update_idletasks()
+            
+            # Load UPI data from RECORDS file
+            self.upi_data = self.parse_records_file(self.upi_file_var.get())
+            
+            # Update status
+            self.status_var.set("Loading trade data...")
+            self.root.update_idletasks()
             
             # Load trade data
-            trade_file = self.trade_file_var.get()
-            if not trade_file:
-                messagebox.showerror("Error", "Please select a trade Excel file")
-                return
-            
-            self.trade_data = pd.read_excel(trade_file)
+            self.trade_data = pd.read_excel(self.trade_file_var.get())
             
             # Apply CNH handling
             self.apply_cnh_handling()
             
-            # Auto-map columns
-            self.auto_map_columns()
+            # Extract available products based on asset class
+            self.extract_available_products()
             
             # Update status
-            self.status_var.set(f"Loaded {len(self.upi_data.get('upis', []))} UPIs and {len(self.trade_data)} trades")
+            upi_count = len(self.upi_data)
+            self.status_var.set(f"Files loaded successfully. UPI records: {upi_count} | Trade records: {len(self.trade_data)}")
             
-            # Switch to mapping tab
+            # Setup product selection
+            self.setup_product_selection()
+            
+            # Switch to product selection tab
             self.notebook.select(1)
             
-            messagebox.showinfo("Success", "Data loaded successfully! Please review column mappings.")
-            
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to load data: {str(e)}")
+            messagebox.showerror("Error", f"Error loading files: {str(e)}")
+            self.status_var.set(f"Error: {str(e)}")
+    
+    def extract_available_products(self):
+        """Extract available product types from the loaded UPI data based on asset class"""
+        self.available_products = []
+        
+        try:
+            # Extract products based on asset class
+            asset_class_filter = "Foreign_Exchange" if self.asset_class_var.get() == "FX" else "Rates"
+            
+            products = set()
+            for upi in self.upi_data:
+                header = upi.get("Header", {})
+                if header.get("AssetClass") == asset_class_filter:
+                    use_case = header.get("UseCase")
+                    if use_case:
+                        products.add(use_case)
+            
+            self.available_products = sorted(list(products))
+            
+        except Exception:
+            self.available_products = []
+    
+    def setup_product_selection(self):
+        """Setup the product selection dropdown"""
+        if self.available_products:
+            # Clear existing widgets in product selection frame
+            for widget in self.product_selection_frame.winfo_children():
+                widget.destroy()
+            
+            # Create product selection widgets
+            self.product_label = ttk.Label(self.product_selection_frame, text="Select Product Type:")
+            self.product_label.pack(pady=5)
+            
+            self.product_dropdown = ttk.Combobox(self.product_selection_frame, textvariable=self.product_type, 
+                                               values=self.available_products, state="readonly")
+            self.product_dropdown.pack(pady=5)
+            
+            self.continue_button = ttk.Button(self.product_selection_frame, text="Continue to Column Mapping", 
+                                            command=self.proceed_to_mapping)
+            self.continue_button.pack(pady=20)
+            
+            # Auto-select first product if only one available
+            if len(self.available_products) == 1:
+                self.product_type.set(self.available_products[0])
+            
+            self.status_product.set(f"Found {len(self.available_products)} product types for {self.asset_class_var.get()}")
+            ttk.Label(self.product_selection_frame, textvariable=self.status_product).pack(pady=5)
+        else:
+            self.status_product.set("No products found for the selected asset class")
+    
+    def proceed_to_mapping(self):
+        """Proceed to column mapping after product selection"""
+        if not self.product_type.get():
+            messagebox.showerror("Error", "Please select a product type")
+            return
+        
+        # Hide product selection frame
+        self.product_selection_frame.pack_forget()
+        
+        # Show mapping UI frame
+        self.mapping_ui_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Create mapping UI based on selected product
+        self.create_mapping_ui()
+    
+    def create_mapping_ui(self):
+        """Create mapping UI based on selected asset class and product"""
+        # Clear existing widgets in mapping frame
+        for widget in self.mapping_ui_frame.winfo_children():
+            widget.destroy()
+        
+        # Create scrollable frame for mapping
+        canvas = tk.Canvas(self.mapping_ui_frame)
+        scrollbar = ttk.Scrollbar(self.mapping_ui_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Get mapping fields based on asset class and product
+        mapping_fields = self.get_mapping_fields()
+        
+        # Create header
+        ttk.Label(scrollable_frame, text=f"Map your Excel columns to UPI search attributes", 
+                 font=("Arial", 12, "bold")).grid(row=0, column=0, columnspan=3, pady=10)
+        ttk.Label(scrollable_frame, text=f"Asset Class: {self.asset_class_var.get()} | Product: {self.product_type.get()}", 
+                 font=("Arial", 10)).grid(row=1, column=0, columnspan=3, pady=5)
+        
+        # Column headers
+        ttk.Label(scrollable_frame, text="Attribute", font=("Arial", 9, "bold")).grid(row=2, column=0, padx=5, pady=5, sticky='w')
+        ttk.Label(scrollable_frame, text="Excel Column", font=("Arial", 9, "bold")).grid(row=2, column=1, padx=5, pady=5, sticky='w')
+        ttk.Label(scrollable_frame, text="Required", font=("Arial", 9, "bold")).grid(row=2, column=2, padx=5, pady=5, sticky='w')
+        
+        # Auto-map columns first
+        self.auto_map_columns()
+        
+        # Dictionary to store the mapping variables
+        self.mapping_vars = {}
+        trade_columns = ["N/A"] + list(self.trade_data.columns)
+        
+        row = 3
+        for label, field_name, required in mapping_fields:
+            # Label with required indicator
+            label_text = label + (" *" if required else "")
+            ttk.Label(scrollable_frame, text=label_text).grid(row=row, column=0, padx=5, pady=5, sticky='w')
+            
+            # Dropdown for column selection
+            var = tk.StringVar()
+            if field_name in self.column_mappings:
+                var.set(self.column_mappings[field_name])
+            else:
+                var.set("N/A")
+            
+            combo = ttk.Combobox(scrollable_frame, textvariable=var, values=trade_columns, width=30)
+            combo.grid(row=row, column=1, padx=5, pady=5, sticky='w')
+            
+            # Required indicator
+            req_text = "Yes" if required else "No"
+            ttk.Label(scrollable_frame, text=req_text).grid(row=row, column=2, padx=5, pady=5, sticky='w')
+            
+            self.mapping_vars[field_name] = var
+            row += 1
+        
+        # Pack canvas and scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Search button
+        button_frame = ttk.Frame(self.mapping_ui_frame)
+        button_frame.pack(fill=tk.X, pady=10)
+        ttk.Button(button_frame, text="Map Columns & Search UPIs", command=self.search_upis).pack()
+    
+    def get_mapping_fields(self):
+        """Get mapping fields based on asset class and product"""
+        asset_class = self.asset_class_var.get()
+        product = self.product_type.get()
+        
+        if asset_class == "FX":
+            base_fields = [
+                ('Asset Class', 'Asset Class', True),
+                ('Instrument Type', 'Instrument Type', True),
+                ('Product Type', 'Product Type', True),
+                ('Currency Pair', 'Currency Pair', True),
+                ('Delivery Type', 'Delivery Type', False),
+            ]
+            
+            # Add product-specific fields
+            if 'Option' in product:
+                base_fields.extend([
+                    ('Option Type', 'Option Type', True),
+                    ('Option Style', 'Option Style', True),
+                ])
+            
+            if 'Non_Standard' in product or 'NDF' in product:
+                base_fields.extend([
+                    ('Settlement Currency', 'Settlement Currency', True),
+                    ('Place of Settlement', 'Place of Settlement', False),
+                ])
+            
+        else:  # IR
+            base_fields = [
+                ('Asset Class', 'Asset Class', True),
+                ('Instrument Type', 'Instrument Type', True),
+                ('Product Type', 'Product Type', True),
+                ('Reference Rate', 'Reference Rate', True),
+                ('Currency', 'Currency', True),
+                ('Term', 'Term', True),
+                ('Delivery Type', 'Delivery Type', False),
+            ]
+            
+            # Add basis swap specific fields
+            if 'Basis' in product:
+                base_fields.extend([
+                    ('Other Leg Reference Rate', 'Other Leg Reference Rate', True),
+                    ('Other Leg Currency', 'Other Leg Currency', False),
+                    ('Other Leg Term', 'Other Leg Term', True),
+                ])
+        
+        return base_fields
     
     def apply_cnh_handling(self):
         """Apply CNH-specific handling logic to trade data"""
@@ -246,19 +496,6 @@ class UPISearchTool:
         trade_columns = list(self.trade_data.columns)
         asset_class = self.asset_class_var.get()
         
-        if asset_class == "FX":
-            upi_attributes = [
-                'Asset Class', 'Instrument Type', 'Product Type', 'Currency Pair',
-                'Settlement Currency', 'Option Type', 'Option Style', 'Delivery Type',
-                'Place of Settlement'
-            ]
-        else:  # IR
-            upi_attributes = [
-                'Asset Class', 'Instrument Type', 'Product Type', 'Reference Rate',
-                'Currency', 'Term', 'Other Leg Reference Rate', 'Other Leg Currency',
-                'Other Leg Term', 'Delivery Type'
-            ]
-        
         suggestions = {
             'Asset Class': ['AssetClass', 'Asset_Class', 'Product_Class', 'Class'],
             'Instrument Type': ['InstrumentType', 'Instrument_Type', 'ProductType', 'Product_Type', 'TradeType', 'Type'],
@@ -279,47 +516,14 @@ class UPISearchTool:
         
         self.column_mappings = {}
         
-        for attr in upi_attributes:
-            for suggestion in suggestions.get(attr, []):
+        for attr, suggestion_list in suggestions.items():
+            for suggestion in suggestion_list:
                 for col in trade_columns:
                     if col.lower() == suggestion.lower():
                         self.column_mappings[attr] = col
                         break
                 if attr in self.column_mappings:
                     break
-        
-        # Create mapping widgets
-        self.create_mapping_widgets(upi_attributes, trade_columns)
-    
-    def create_mapping_widgets(self, upi_attributes, trade_columns):
-        """Create widgets for column mapping"""
-        # Clear existing widgets
-        for widget in self.mapping_scrollable_frame.winfo_children():
-            widget.destroy()
-        
-        self.mapping_vars = {}
-        
-        # Add "N/A" option to trade columns
-        column_options = ["N/A"] + trade_columns
-        
-        for i, attr in enumerate(upi_attributes):
-            frame = ttk.Frame(self.mapping_scrollable_frame)
-            frame.pack(fill=tk.X, padx=10, pady=5)
-            
-            # Attribute label
-            ttk.Label(frame, text=f"{attr}:", width=25).pack(side=tk.LEFT)
-            
-            # Dropdown for column selection
-            var = tk.StringVar()
-            if attr in self.column_mappings:
-                var.set(self.column_mappings[attr])
-            else:
-                var.set("N/A")
-            
-            combo = ttk.Combobox(frame, textvariable=var, values=column_options, width=30)
-            combo.pack(side=tk.LEFT, padx=10)
-            
-            self.mapping_vars[attr] = var
     
     def search_upis(self):
         """Perform UPI search"""
@@ -346,7 +550,7 @@ class UPISearchTool:
                 trade_attrs = self.extract_trade_attributes(trade)
                 
                 # Search through UPI data
-                for upi in self.upi_data.get('upis', []):
+                for upi in self.upi_data:  # Changed from self.upi_data.get('upis', [])
                     score = self.calculate_match_score(trade_attrs, upi, asset_class)
                     
                     if score > best_score:
@@ -356,7 +560,7 @@ class UPISearchTool:
                 # Prepare result
                 result = {
                     'Trade_Index': idx,
-                    'Best_UPI': best_match['upiCode'] if best_match else 'No Match',
+                    'Best_UPI': best_match['Identifier']['UPI'] if best_match else 'No Match',
                     'Match_Score': best_score,
                     'Trade_Attributes': trade_attrs,
                     'UPI_Details': best_match if best_match else {}
@@ -494,30 +698,47 @@ class UPISearchTool:
                 (trade_ccy1 == upi_ccy2 and trade_ccy2 == upi_ccy1))
     
     def get_upi_attribute_value(self, upi, attribute):
-        """Extract attribute value from UPI record"""
+        """Extract attribute value from UPI record based on RECORDS file structure"""
         mapping = {
-            'Asset Class': lambda u: u.get('assetClass', ''),
-            'Instrument Type': lambda u: u.get('instrumentType', ''),
-            'Product Type': lambda u: u.get('product', ''),
-            'Currency Pair': lambda u: u.get('underlying', {}).get('currencyPair', ''),
-            'Settlement Currency': lambda u: u.get('underlying', {}).get('settlementCurrency', ''),
-            'Option Type': lambda u: u.get('optionType', ''),
-            'Option Style': lambda u: u.get('optionStyle', ''),
-            'Delivery Type': lambda u: u.get('deliveryType', ''),
-            'Place of Settlement': lambda u: u.get('placeOfSettlement', ''),
-            'Reference Rate': lambda u: u.get('underlying', {}).get('referenceRate', ''),
-            'Currency': lambda u: u.get('underlying', {}).get('currency', ''),
-            'Term': lambda u: u.get('underlying', {}).get('term', ''),
-            'Other Leg Reference Rate': lambda u: u.get('otherLeg', {}).get('referenceRate', ''),
-            'Other Leg Currency': lambda u: u.get('otherLeg', {}).get('currency', ''),
-            'Other Leg Term': lambda u: u.get('otherLeg', {}).get('term', ''),
-            'Notional Currency': lambda u: self.extract_currency_from_pair(u.get('underlying', {}).get('currencyPair', ''), 0),
-            'Other Notional Currency': lambda u: self.extract_currency_from_pair(u.get('underlying', {}).get('currencyPair', ''), 1)
+            'Asset Class': lambda u: u.get('Header', {}).get('AssetClass', ''),
+            'Instrument Type': lambda u: u.get('Header', {}).get('InstrumentType', ''),
+            'Product Type': lambda u: u.get('Header', {}).get('UseCase', ''),
+            'Settlement Currency': lambda u: u.get('Attributes', {}).get('SettlementCurrency', ''),
+            'Option Type': lambda u: u.get('Attributes', {}).get('OptionType', ''),
+            'Option Style': lambda u: u.get('Attributes', {}).get('OptionExerciseStyle', ''),
+            'Delivery Type': lambda u: u.get('Attributes', {}).get('DeliveryType', ''),
+            'Place of Settlement': lambda u: u.get('Attributes', {}).get('PlaceofSettlement', ''),
+            'Reference Rate': lambda u: u.get('Attributes', {}).get('ReferenceRate', ''),
+            'Currency': lambda u: u.get('Attributes', {}).get('NotionalCurrency', ''),
+            'Term': lambda u: self.combine_term_value_unit(u.get('Attributes', {})),
+            'Other Leg Reference Rate': lambda u: u.get('Attributes', {}).get('OtherLegReferenceRate', ''),
+            'Other Leg Currency': lambda u: u.get('Attributes', {}).get('OtherNotionalCurrency', ''),
+            'Other Leg Term': lambda u: self.combine_other_leg_term_value_unit(u.get('Attributes', {})),
+            'Notional Currency': lambda u: u.get('Attributes', {}).get('NotionalCurrency', ''),
+            'Other Notional Currency': lambda u: u.get('Attributes', {}).get('OtherNotionalCurrency', '')
         }
         
         if attribute in mapping:
             return mapping[attribute](upi)
         
+        return ''
+    
+    def combine_term_value_unit(self, attributes):
+        """Combine term value and unit into a single string"""
+        term_value = attributes.get('ReferenceRateTermValue', '')
+        term_unit = attributes.get('ReferenceRateTermUnit', '')
+        
+        if term_value and term_unit:
+            return f"{term_value}{term_unit}"
+        return ''
+    
+    def combine_other_leg_term_value_unit(self, attributes):
+        """Combine other leg term value and unit into a single string"""
+        term_value = attributes.get('OtherLegReferenceRateTermValue', '')
+        term_unit = attributes.get('OtherLegReferenceRateTermUnit', '')
+        
+        if term_value and term_unit:
+            return f"{term_value}{term_unit}"
         return ''
     
     def extract_currency_from_pair(self, currency_pair, index):
