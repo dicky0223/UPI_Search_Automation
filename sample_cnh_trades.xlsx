@@ -1,0 +1,6 @@
+TradeID,AssetClass,InstrumentType,CcyPair,SettlementCcy,DeliveryType,OptionType,OptionStyle
+T001,ForeignExchange,Swap,USD/CNH,CNH,Cash,,
+T002,ForeignExchange,Forward,USD/CNH,CNH,Cash,,
+T003,ForeignExchange,Option,USD/CNH,CNH,Cash,Call,European
+T004,ForeignExchange,Forward,EUR/USD,,Physical,,
+T005,ForeignExchange,Option,GBP/USD,,Physical,Call,European

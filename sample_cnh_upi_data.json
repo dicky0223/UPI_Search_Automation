@@ -1,0 +1,64 @@
+{
+  "upis": [
+    {
+      "upiCode": "CNH_SWAP_001",
+      "assetClass": "ForeignExchange",
+      "instrumentType": "Swap",
+      "product": "Non_Deliverable_FX_Swap",
+      "underlying": {
+        "currencyPair": "USD/CNY",
+        "settlementCurrency": "CNY"
+      },
+      "deliveryType": "Cash",
+      "placeOfSettlement": "Hong Kong"
+    },
+    {
+      "upiCode": "CNH_FWD_001",
+      "assetClass": "ForeignExchange",
+      "instrumentType": "Forward",
+      "product": "Non_Standard",
+      "underlying": {
+        "currencyPair": "USD/CNY",
+        "settlementCurrency": "CNY"
+      },
+      "deliveryType": "Cash",
+      "placeOfSettlement": "Hong Kong"
+    },
+    {
+      "upiCode": "CNH_OPT_001",
+      "assetClass": "ForeignExchange",
+      "instrumentType": "Option",
+      "product": "Non_Standard",
+      "underlying": {
+        "currencyPair": "USD/CNY",
+        "settlementCurrency": "CNY"
+      },
+      "optionType": "Call",
+      "optionStyle": "European",
+      "deliveryType": "Cash",
+      "placeOfSettlement": "Hong Kong"
+    },
+    {
+      "upiCode": "REGULAR_FWD_001",
+      "assetClass": "ForeignExchange",
+      "instrumentType": "Forward",
+      "product": "Vanilla",
+      "underlying": {
+        "currencyPair": "EUR/USD"
+      },
+      "deliveryType": "Physical"
+    },
+    {
+      "upiCode": "REGULAR_OPT_001",
+      "assetClass": "ForeignExchange",
+      "instrumentType": "Option",
+      "product": "Vanilla_Option",
+      "underlying": {
+        "currencyPair": "GBP/USD"
+      },
+      "optionType": "Call",
+      "optionStyle": "European",
+      "deliveryType": "Physical"
+    }
+  ]
+}
