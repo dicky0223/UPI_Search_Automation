@@ -210,6 +210,15 @@ class UPISearchBatch:
                 if pd.notna(value):
                     attrs[upi_attr] = str(value)
         
+        # Extract individual currencies from currency pair for bidirectional matching
+        if 'Currency Pair' in attrs:
+            currency_pair = attrs['Currency Pair']
+            if '/' in currency_pair:
+                currencies = currency_pair.split('/')
+                if len(currencies) == 2:
+                    attrs['TradeNotionalCurrency'] = currencies[0].strip()
+                    attrs['TradeOtherNotionalCurrency'] = currencies[1].strip()
+        
         # Apply CNH-specific overrides
         if 'ProcessedUseCase' in trade.index and pd.notna(trade['ProcessedUseCase']) and trade['ProcessedUseCase']:
             attrs['Product Type'] = trade['ProcessedUseCase']
@@ -223,20 +232,27 @@ class UPISearchBatch:
                 attrs['Currency'] = trade['ProcessedCurrency']
             if 'Settlement Currency' in attrs:
                 attrs['Settlement Currency'] = trade['ProcessedCurrency']
+            
+            # Update individual currencies if CNH was processed to CNY
+            if 'TradeNotionalCurrency' in attrs and attrs['TradeNotionalCurrency'].upper() == 'CNH':
+                attrs['TradeNotionalCurrency'] = 'CNY'
+            if 'TradeOtherNotionalCurrency' in attrs and attrs['TradeOtherNotionalCurrency'].upper() == 'CNH':
+                attrs['TradeOtherNotionalCurrency'] = 'CNY'
         
         return attrs
     
     def calculate_match_score(self, trade_attrs, upi, asset_class):
-        """Calculate match score between trade and UPI"""
+        """Calculate match score between trade and UPI with bidirectional currency matching"""
         score = 0
         
         if asset_class == "FX":
-            # FX scoring weights
+            # FX scoring weights - removed Currency Pair, added individual currency matching
             weights = {
                 'Asset Class': 20,
                 'Instrument Type': 20,
                 'Product Type': 20,
-                'Currency Pair': 20,
+                'Notional Currency': 10,
+                'Other Notional Currency': 10,
                 'Settlement Currency': 10,
                 'Option Type': 5,
                 'Option Style': 5,
@@ -260,7 +276,12 @@ class UPISearchBatch:
         
         # Calculate score based on matches
         for attr, weight in weights.items():
-            if attr in trade_attrs:
+            if attr in ['Notional Currency', 'Other Notional Currency'] and asset_class == "FX":
+                # Handle bidirectional currency matching for FX
+                if self.match_currencies_bidirectional(trade_attrs, upi):
+                    score += weights['Notional Currency'] + weights['Other Notional Currency']
+                    break  # Only count this once for both currencies
+            elif attr in trade_attrs:
                 trade_value = str(trade_attrs[attr]).upper()
                 upi_value = self.get_upi_attribute_value(upi, attr)
                 
@@ -268,6 +289,24 @@ class UPISearchBatch:
                     score += weight
         
         return score
+    
+    def match_currencies_bidirectional(self, trade_attrs, upi):
+        """Check if trade currencies match UPI currencies in either order"""
+        # Get trade currencies
+        trade_ccy1 = trade_attrs.get('TradeNotionalCurrency', '').upper()
+        trade_ccy2 = trade_attrs.get('TradeOtherNotionalCurrency', '').upper()
+        
+        # Get UPI currencies
+        upi_ccy1 = self.get_upi_attribute_value(upi, 'Notional Currency').upper()
+        upi_ccy2 = self.get_upi_attribute_value(upi, 'Other Notional Currency').upper()
+        
+        # Check if currencies are available
+        if not all([trade_ccy1, trade_ccy2, upi_ccy1, upi_ccy2]):
+            return False
+        
+        # Check both orders: (trade1, trade2) == (upi1, upi2) OR (trade1, trade2) == (upi2, upi1)
+        return ((trade_ccy1 == upi_ccy1 and trade_ccy2 == upi_ccy2) or 
+                (trade_ccy1 == upi_ccy2 and trade_ccy2 == upi_ccy1))
     
     def get_upi_attribute_value(self, upi, attribute):
         """Extract attribute value from UPI record"""
@@ -286,12 +325,22 @@ class UPISearchBatch:
             'Term': lambda u: u.get('underlying', {}).get('term', ''),
             'Other Leg Reference Rate': lambda u: u.get('otherLeg', {}).get('referenceRate', ''),
             'Other Leg Currency': lambda u: u.get('otherLeg', {}).get('currency', ''),
-            'Other Leg Term': lambda u: u.get('otherLeg', {}).get('term', '')
+            'Other Leg Term': lambda u: u.get('otherLeg', {}).get('term', ''),
+            'Notional Currency': lambda u: self.extract_currency_from_pair(u.get('underlying', {}).get('currencyPair', ''), 0),
+            'Other Notional Currency': lambda u: self.extract_currency_from_pair(u.get('underlying', {}).get('currencyPair', ''), 1)
         }
         
         if attribute in mapping:
             return mapping[attribute](upi)
         
+        return ''
+    
+    def extract_currency_from_pair(self, currency_pair, index):
+        """Extract individual currency from currency pair (e.g., 'USD/EUR' -> 'USD' or 'EUR')"""
+        if '/' in currency_pair:
+            currencies = currency_pair.split('/')
+            if len(currencies) > index:
+                return currencies[index].strip()
         return ''
     
     def export_results(self, output_file):
